@@ -1,0 +1,105 @@
+---
+alwaysApply: false
+---
+# Purpose
+Resolve a single tracked issue by producing a minimal, safe code change and a ready-to-merge PR that passes CI and meets acceptance criteria.
+
+# Additional Rules (if applicable)
+- `uv.mdc` and `python-styleguide.mdc` apply to all python-related files
+- `node.mdc` applies to all node-related commands and files
+
+## Inputs
+- **Issue identifier:** filename or `#XX`
+  - Issue file path: `.issues/issue-XX.md`
+    - The first line in the issue file is the issue title
+  - Optional sub-issue path: `.issues/issue-XX-sub-YY.md` (YY is 2-digit, incrementing)
+- **Repo docs:** `README.md`, `docs/**`, and any codeowner/config files.
+
+## Hard Constraints (do not violate)
+- **Atomicity:** one logical change; no opportunistic refactors.
+- **Scope:** touch only files required for this fix.
+- **Compatibility:** no breaking public APIs; keep behavior flags backward compatible.
+- **Dependencies:** do **not** add/upgrade/remove dependencies unless the issue explicitly requires it. If required, justify and pin exact versions; update lockfiles.
+- **Security & Secrets:** never introduce secrets; follow secure defaults; validate inputs/outputs.
+- **Migrations:** DB/schema changes must be additive and gated (feature flag); never destructive in the same PR.
+
+## Workflow (follow in order)
+1. **Read & Understand**
+   - Load `.issues/issue-XX.md`; extract description + acceptance criteria.
+   - Skim `README.md` and relevant `docs/**` for architecture, coding standards, and test strategy.
+
+2. **Plan**
+   - Draft a concise plan (≤5 bullets) explaining the minimal approach and files to touch.
+   - List any trade-offs, risks, and test cases you’ll add/update.
+
+3. **Implement**
+   - Make only the changes from the plan.
+   - Add/adjust tests alongside code. Prefer unit tests; add integration tests if acceptance criteria require them.
+
+4. **Local Validation**
+   - Run static checks: lint, type checks, formatters.
+   - Run tests and measure coverage.
+   - Run security checks (SAST/dep scan if configured).
+   - Capture command outputs (summaries) for the PR description.
+
+5. **(Optionally) Update Makefile, CI, etc.**
+   - If applicable, update the Makefile, CI and any other relevant infrastructure
+   - Be conservative in updating these files; only do so if the user explicitly asks for it or if the issue explicitly requires it
+   - The `test` target in the Makefile already covers unit tests, integration tests, and end-to-end tests -- make sure your tests also run within this target
+
+6. **Documentation**
+   - Update in-code comments, `docs/**`, and `README.md` iff behavior or config changes.
+   - If any user-visible change: update CHANGELOG (keep/unreleased or next version section).
+
+7. **Commit & PR**
+   - Commit style: Conventional Commits recommended.
+     - Example: `Handle null payload in FooService (#XX)`
+   - Create `.issues/commit-msg-XX.md` containing:
+     - Title: same as issue description (without leading `#`)
+     - `Fixes #XX`
+     - (Optional) 1–2 sentence motivation if non-obvious
+     - **Changes:** 3–4 bullets, each starting with `-`, focusing on user-facing or architectural effects (exclude boilerplate like “added tests”)
+     - After all of the above, add a new line with a "---" separator followed by (if applicable):
+       - Summary of the plan and rationale
+       - Implementation details and links
+       - Details on the test coverage + exact commands to run and reproduce tests
+       - List of modified files
+       - Risk assessment and rollback notes
+
+## Code Rules
+- Single responsibility; minimal diff size.
+- No unrelated renames, formatting sweeps, or file moves.
+- Public API: additions allowed; modifications/removals require a separate, planned deprecation issue.
+- Feature flags for behavior changes when risk > low.
+- Logging/metrics: add only as needed for acceptance criteria or debugging; keep noise low.
+
+## Validation Checklist (must be true before marking resolved)
+- [ ] All acceptance criteria in `.issues/issue-XX.md` are met
+- [ ] Unit/integration tests pass locally and in CI
+- [ ] Coverage meets or exceeds project threshold
+- [ ] Linting/formatting/type checks pass
+- [ ] Security checks pass (no new critical/high issues)
+- [ ] Performance impact measured or reasoned acceptable (if applicable)
+- [ ] Docs updated (code comments, README, API docs, CHANGELOG if user-visible)
+- [ ] No breaking API changes introduced
+
+## Rollback & Escalation
+- If validation fails:
+  - Document the failure in the PR (what, why, logs).
+  - Attempt up to **3** targeted fixes. Keep atomicity; avoid scope creep.
+  - If still blocked, open a sub-issue: `.issues/issue-XX-sub-YY.md` with:
+    - Repro steps, failing tests, stack traces
+    - Suspected root cause and proposed next steps
+  - Escalate to maintainers if core functionality is impacted or a breaking fix is unavoidable.
+
+## Success Criteria
+- Acceptance criteria satisfied
+- CI green (tests/coverage/lint/security)
+- Documentation and CHANGELOG (if needed) updated
+- No regressions (verified by tests and limited manual checks where relevant)
+
+## Guardrails & Notes
+- Prefer adding tests that would have caught the bug.
+- Avoid touching more than **3** modules; if necessary, split using sub-issues.
+- Keep PR < **300** lines of effective change where feasible; otherwise justify in PR.
+- Avoid TODOs in committed code; create follow-up issues instead.

@@ -1,0 +1,7 @@
+---
+description: Running node, nvm, npm, pnpm
+alwaysApply: false
+---
+* Run `nvm use` before running any node-related commands
+* Use `nvm` for node version management
+* Use `pnpm` for package management

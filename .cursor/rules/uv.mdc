@@ -1,0 +1,8 @@
+---
+description: Python project management
+globs:
+alwaysApply: true
+---
+* Use `uv` for dependencies and project management
+* Use `uv run` to run python commands
+* Use `uv tool` to manage tools if applicable
