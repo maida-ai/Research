@@ -3,7 +3,7 @@ import subprocess
 
 
 def load_md(file_path: str) -> str:
-    with open(file_path, "r") as f:
+    with open(file_path) as f:
         return f.read()
 
 
@@ -51,7 +51,6 @@ def parse_md(
             current_body = []
 
     return issues
-
 
 
 def main():
