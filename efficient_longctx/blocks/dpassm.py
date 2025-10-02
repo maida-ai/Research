@@ -101,3 +101,139 @@ class DPASSMBlock(nn.Module):
         mask = mask.masked_fill(~combined_mask, float("-inf"))
 
         return mask
+
+    def _compute_attention(
+        self, x: torch.Tensor, mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """
+        Compute windowed causal attention.
+
+        Args:
+            x: Input tensor of shape (batch_size, seq_len, d_model)
+            mask: Optional mask tensor of shape (seq_len, seq_len)
+
+        Returns:
+            Attention output tensor of shape (batch_size, seq_len, d_model)
+        """
+        B, T, d = x.shape
+        d_h = d // self.n_heads
+
+        # Project Q, K, V
+        Q = self.W_Q(x).view(B, T, self.n_heads, d_h).transpose(1, 2)  # (B, h, T, d_h)
+        K = self.W_K(x).view(B, T, self.n_heads, d_h).transpose(1, 2)  # (B, h, T, d_h)
+        V = self.W_V(x).view(B, T, self.n_heads, d_h).transpose(1, 2)  # (B, h, T, d_h)
+
+        # Scale by sqrt(d_h)
+        attention_scores = torch.matmul(Q, K.transpose(-2, -1)) / (d_h**0.5)
+
+        # Apply mask if provided
+        if mask is not None:
+            attention_scores = attention_scores + mask
+
+        # Softmax
+        attention_weights = torch.softmax(attention_scores, dim=-1)
+        attention_weights = self.drop(attention_weights)
+
+        # Apply attention to values
+        attention_output = torch.matmul(attention_weights, V)
+        attention_output = attention_output.transpose(1, 2).contiguous().view(B, T, d)
+
+        # Final linear projection
+        attention_output = self.W_O(attention_output)
+        attention_output = self.drop(attention_output)
+
+        return attention_output
+
+    def _compute_ssm(
+        self, x: torch.Tensor, state: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Compute SSM recurrent update.
+
+        Args:
+            x: Input tensor of shape (batch_size, seq_len, d_model)
+            state: Previous SSM state tensor of shape (batch_size, ssm_state_dim)
+
+        Returns:
+            Tuple of (ssm_output, new_state) where:
+            - ssm_output: shape (batch_size, seq_len, d_model)
+            - new_state: shape (batch_size, ssm_state_dim)
+        """
+        B, T, d = x.shape
+
+        if state is None:
+            # Initialize state to zeros
+            state = torch.zeros(B, self.ssm_state_dim, device=x.device, dtype=x.dtype)
+
+        # Compute input projections B(x_t) for SSM
+        u = self.B(x)  # (B, T, ssm_state_dim)
+
+        # Initialize output tensor
+        outputs = []
+        current_state = state
+
+        # Sequential SSM update (more stable than parallel for training)
+        for i in range(T):
+            # SSM update: s_t = A * s_{t-1} + B * u_t
+            current_state = self.A * current_state + u[:, i, :]
+            outputs.append(current_state)
+
+        # Stack outputs
+        ssm_states = torch.stack(outputs, dim=1)  # (B, T, ssm_state_dim)
+
+        # Compute SSM output C(s_t)
+        ssm_output = self.C(ssm_states)  # (B, T, d_model)
+        ssm_output = self.drop(ssm_output)
+
+        return ssm_output, current_state
+
+    def forward(
+        self, x: torch.Tensor, ssm_state: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Forward pass through DPASSM block.
+
+        Args:
+            x: Input tensor of shape (batch_size, seq_len, d_model)
+            ssm_state: Previous SSM state tensor of shape (batch_size, ssm_state_dim)
+
+        Returns:
+            Tuple of (output, new_ssm_state) where:
+            - output: shape (batch_size, seq_len, d_model)
+            - new_ssm_state: shape (batch_size, ssm_state_dim)
+        """
+        B, T, d = x.shape
+
+        # Pre-layer normalization
+        x_norm1 = self.ln1(x)
+
+        # Build window mask for attention
+        mask = self._build_window_mask(T, self.window_size, x.device, x.dtype)
+
+        # Dual-path forward:
+        # 1. Local attention path (windowed causal attention)
+        attention_out = self._compute_attention(x_norm1, mask)
+
+        # 2. SSM path (global state-space model)
+        ssm_out, new_ssm_state = self._compute_ssm(x_norm1, ssm_state)
+
+        # 3. Fuse attention and SSM outputs with learnable gate
+        # Gate controls mixture: gate_norm * attention_out + (1 - gate_norm) * ssm_out
+        gate_logits = self.gate(x_norm1)  # (B, T, d_model)
+        gate_weights = torch.sigmoid(gate_logits)  # (B, T, d_model)
+
+        # Fused output
+        fused_out = gate_weights * attention_out + (1 - gate_weights) * ssm_out
+
+        # Residual connection
+        x = x + fused_out
+
+        # Second sub-layer (post-layer norm + MLP)
+        x_norm2 = self.ln2(x)
+        mlp_out = self.mlp(x_norm2)
+        mlp_out = self.drop(mlp_out)
+
+        # Final residual connection
+        output = x + mlp_out
+
+        return output, new_ssm_state
