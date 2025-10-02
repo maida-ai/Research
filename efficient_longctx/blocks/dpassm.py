@@ -204,6 +204,12 @@ class DPASSMBlock(nn.Module):
         """
         Forward pass through DPASSM block.
 
+        Implements the exact specification from issue #24:
+        - Feature-wise gate: g = torch.sigmoid(self.gate(x_in))
+        - Fuse: y = g * y_attn + (1.0 - g) * y_ssm
+        - Residual 1: x = x + self.drop(y)
+        - FFN with Pre-LN: x = x + self.drop(self.mlp(self.ln2(x)))
+
         Args:
             x: Input tensor of shape (batch_size, seq_len, d_model)
             ssm_state: Previous SSM state tensor of shape (batch_size, ssm_state_dim)
@@ -215,6 +221,9 @@ class DPASSMBlock(nn.Module):
         """
         B, T, d = x.shape
 
+        # Keep x_in for gate computation (before normalization)
+        x_in = x
+
         # Pre-layer normalization
         x_norm1 = self.ln1(x)
 
@@ -223,28 +232,21 @@ class DPASSMBlock(nn.Module):
 
         # Dual-path forward:
         # 1. Local attention path (windowed causal attention)
-        attention_out = self._compute_attention(x_norm1, mask)
+        y_attn = self._compute_attention(x_norm1, mask)
 
-        # 2. SSM path (global state-space model) - uses same pre-normed input as attention
-        ssm_out, new_ssm_state = self._compute_ssm(x_norm1, ssm_state)
+        # 2. SSM path (global state-space model)
+        y_ssm, new_ssm_state = self._compute_ssm(x_norm1, ssm_state)
 
-        # 3. Fuse attention and SSM outputs with learnable gate
-        # Gate controls mixture: gate_norm * attention_out + (1 - gate_norm) * ssm_out
-        gate_logits = self.gate(x_norm1)  # (B, T, d_model)
-        gate_weights = torch.sigmoid(gate_logits)  # (B, T, d_model)
+        # 3. Feature-wise gate: g = torch.sigmoid(self.gate(x_in))
+        g = torch.sigmoid(self.gate(x_in))  # shape (B,T,d)
 
-        # Fused output
-        fused_out = gate_weights * attention_out + (1 - gate_weights) * ssm_out
+        # 4. Fuse: y = g * y_attn + (1.0 - g) * y_ssm
+        y = g * y_attn + (1.0 - g) * y_ssm
 
-        # Residual connection
-        x = x + fused_out
+        # 5. Residual 1: x = x + self.drop(y)
+        x = x + self.drop(y)
 
-        # Second sub-layer (post-layer norm + MLP)
-        x_norm2 = self.ln2(x)
-        mlp_out = self.mlp(x_norm2)
-        mlp_out = self.drop(mlp_out)
+        # 6. FFN with Pre-LN: x = x + self.drop(self.mlp(self.ln2(x)))
+        x = x + self.drop(self.mlp(self.ln2(x)))
 
-        # Final residual connection
-        output = x + mlp_out
-
-        return output, new_ssm_state
+        return x, new_ssm_state
