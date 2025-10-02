@@ -250,3 +250,99 @@ class DPASSMBlock(nn.Module):
         x = x + self.drop(self.mlp(self.ln2(x)))
 
         return x, new_ssm_state
+
+    def forward_step(
+        self, x_t: torch.Tensor, ssm_state: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Streaming inference step - process one token at a time.
+
+        This method enables streaming inference by updating the model state
+        incrementally one token at a time, without needing the full sequence.
+
+        Args:
+            x_t: Current token embedding of shape (batch_size, 1, d_model)
+            ssm_state: Previous SSM state of shape (batch_size, ssm_state_dim)
+
+        Returns:
+            Tuple of (output_token, new_ssm_state) where:
+            - output_token: shape (batch_size, 1, d_model)
+            - new_ssm_state: shape (batch_size, ssm_state_dim)
+        """
+        B, T_in, d = x_t.shape
+        assert T_in == 1, f"forward_step expects T=1, got T={T_in}"
+
+        # Keep copy for residual connections
+        x_in = x_t
+
+        # Pre-layer normalization for the single token
+        x_norm1 = self.ln1(x_t)  # (B, 1, d)
+
+        # Handle attention path for single token
+        # Since we have only 1 token, the window is effectively just itself
+        # We still compute attention in case we want to query previous context
+        # For now, we'll use self-attention over the single token
+        Q = (
+            self.W_Q(x_norm1)
+            .view(B, 1, self.n_heads, d // self.n_heads)
+            .transpose(1, 2)
+        )  # (B, h, 1, d_h)
+        K = (
+            self.W_K(x_norm1)
+            .view(B, 1, self.n_heads, d // self.n_heads)
+            .transpose(1, 2)
+        )  # (B, h, 1, d_h)
+        V = (
+            self.W_V(x_norm1)
+            .view(B, 1, self.n_heads, d // self.n_heads)
+            .transpose(1, 2)
+        )  # (B, h, 1, d_h)
+
+        d_h = d // self.n_heads
+        attention_scores = torch.matmul(Q, K.transpose(-2, -1)) / (
+            d_h**0.5
+        )  # (B, h, 1, 1)
+
+        # Apply dropout to attention weights
+        attention_weights = torch.softmax(attention_scores, dim=-1)  # (B, h, 1, 1)
+        attention_weights = self.drop(attention_weights)
+
+        # Apply attention to values
+        y_attn = torch.matmul(attention_weights, V)  # (B, h, 1, d_h)
+        y_attn = y_attn.transpose(1, 2).contiguous().view(B, 1, d)  # (B, 1, d)
+        y_attn = self.W_O(y_attn)  # (B, 1, d)
+        y_attn = self.drop(y_attn)
+
+        # Handle SSM path for single token
+        if ssm_state is None:
+            ssm_state = torch.zeros(
+                B, self.ssm_state_dim, device=x_t.device, dtype=x_t.dtype
+            )
+        else:
+            ssm_state = ssm_state.clone()
+
+        # SSM update: s_t = alpha * s_{t-1} + B(x_norm1[0])
+        alpha = torch.tanh(self.A)  # (d_s,)
+        current_state = alpha * ssm_state + self.B(x_norm1[:, 0, :])  # (B, d_s)
+
+        # SSM output: y_ssm = C(s_t)
+        y_ssm = self.C(current_state).unsqueeze(1)  # (B, 1, d_model)
+        y_ssm = self.drop(y_ssm)
+
+        # Feature-wise gate computation
+        g = torch.sigmoid(self.gate(x_in))  # (B, 1, d)
+
+        # Fuse attention and SSM outputs
+        y = g * y_attn + (1.0 - g) * y_ssm  # (B, 1, d)
+
+        # Apply residual connection
+        x_out = x_in + self.drop(y)  # (B, 1, d)
+
+        # Pre-LN for MLP
+        x_norm2 = self.ln2(x_out)  # (B, 1, d)
+
+        # Apply MLP and residual connection
+        mlp_out = self.mlp(x_norm2)  # (B, 1, d)
+        x_final = x_out + self.drop(mlp_out)  # (B, 1, d)
+
+        return x_final, current_state
