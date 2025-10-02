@@ -7,6 +7,7 @@ Resolve a single tracked issue by producing a minimal, safe code change and a re
 # Additional Rules (if applicable)
 - `uv.mdc` and `python-styleguide.mdc` apply to all python-related files
 - `node.mdc` applies to all node-related commands and files
+- The user might reference parent issue. In that case, the parent issue should be treated as a guideline/reference, but the main task must still focus on the main issue.
 
 ## Inputs
 - **Issue identifier:** filename or `#XX`
