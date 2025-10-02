@@ -216,6 +216,97 @@ class TestDPASSMBlock:
             assert torch.allclose(output1, output2, atol=1e-6)
             assert torch.allclose(state1, state2, atol=1e-6)
 
+    def test_ssm_determinism_with_seed(
+        self, model: DPASSMBlock, model_params: dict[str, int]
+    ) -> None:
+        """
+        Test SSM deterministic behavior with torch.manual_seed as required by issue #23.
+        """
+        # Set seed for reproducible results
+        torch.manual_seed(123)
+
+        batch_size, seq_len = 2, 8
+        d_model = model_params["d_model"]
+
+        # Create input with seed
+        x = torch.randn(batch_size, seq_len, d_model)
+        x = x.clone()  # Ensure deterministic input
+
+        model.eval()
+        with torch.no_grad():
+            # First forward pass
+            output1, state1 = model(x, ssm_state=None)
+
+            # Reset seed and do second forward pass with same input
+            torch.manual_seed(123)  # Reset to same seed
+            x2 = torch.randn(batch_size, seq_len, d_model)  # Same random input
+            x2 = x.clone()  # Use exact same input tensor
+
+            output2, state2 = model(x2, ssm_state=None)
+
+            # Should be deterministic with same seed and input
+            assert torch.allclose(output1, output2, atol=1e-6), (
+                f"SSM outputs not deterministic with same seed. "
+                f"Max diff: {torch.max(torch.abs(output1 - output2))}"
+            )
+            assert torch.allclose(state1, state2, atol=1e-6), (
+                f"SSM states not deterministic with same seed. "
+                f"Max diff: {torch.max(torch.abs(state1 - state2))}"
+            )
+
+    def test_ssm_continuity_across_chunks(
+        self, model: DPASSMBlock, model_params: dict[str, int]
+    ) -> None:
+        """
+        Test SSM continuity across chunks as required by issue #23.
+
+        This test isolates the SSM component to verify that SSM paths are continuous
+        when split across chunks, independent of the attention mechanism.
+        """
+        # Set seed for deterministic results
+        torch.manual_seed(42)
+
+        batch_size, seq_len = 2, 16
+        d_model = model_params["d_model"]
+
+        # Create full input
+        x_full = torch.randn(batch_size, seq_len, d_model)
+
+        # Split into two halves
+        mid_point = seq_len // 2
+        x_a = x_full[:, :mid_point, :]  # First half
+        x_b = x_full[:, mid_point:, :]  # Second half
+
+        model.eval()
+        with torch.no_grad():
+            # Apply pre-layer normalization to get x_in from LN1(x)
+            x_norm_full = model.ln1(x_full)
+            x_norm_a = model.ln1(x_a)
+            x_norm_b = model.ln1(x_b)
+
+            # Test SSM component directly
+            # Full SSM forward pass
+            y_ssm_full, s_ssm_full = model._compute_ssm(x_norm_full, state=None)
+
+            # Split SSM forward passes
+            y_ssm_a, s_ssm_a = model._compute_ssm(x_norm_a, state=None)
+            y_ssm_b, s_ssm_b = model._compute_ssm(x_norm_b, state=s_ssm_a)
+
+            # Concatenate SSM outputs from two halves
+            y_ssm_concatenated = torch.cat([y_ssm_a, y_ssm_b], dim=1)
+
+            # Check SSM continuity within tolerance specified in issue #23
+            assert torch.allclose(
+                y_ssm_concatenated, y_ssm_full, atol=1e-5, rtol=1e-4
+            ), (
+                f"SSM output continuity failed. Max diff: {torch.max(torch.abs(y_ssm_concatenated - y_ssm_full))}"
+            )
+
+            # Check final SSM state matches
+            assert torch.allclose(s_ssm_b, s_ssm_full, atol=1e-6, rtol=1e-5), (
+                f"SSM state continuity failed. Max diff: {torch.max(torch.abs(s_ssm_b - s_ssm_full))}"
+            )
+
     def test_device_consistency(self, model_params: dict[str, int]) -> None:
         """Test model works on different devices."""
         model = DPASSMBlock(**model_params)

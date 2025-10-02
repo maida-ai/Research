@@ -145,44 +145,55 @@ class DPASSMBlock(nn.Module):
         return attention_output
 
     def _compute_ssm(
-        self, x: torch.Tensor, state: torch.Tensor | None = None
+        self, x_in: torch.Tensor, state: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Compute SSM recurrent update.
 
+        Implementation follows specification:
+        - Uses pre-normed input x_in from LN1(x)
+        - Sequential loop over t = 0..T-1
+        - s_t = alpha * s_{t-1} + B(x_in[:, t, :])
+        - alpha = torch.tanh(self.A) to keep stable in (-1,1)
+        - y_ssm[:, t, :] = C(s_t)
+
         Args:
-            x: Input tensor of shape (batch_size, seq_len, d_model)
-            state: Previous SSM state tensor of shape (batch_size, ssm_state_dim)
+            x_in: Pre-normalized input tensor of shape (batch_size, seq_len, d_model)
+            state: Previous SSM state tensor of shape (batch_size, ssm_state_dim) or None
 
         Returns:
             Tuple of (ssm_output, new_state) where:
             - ssm_output: shape (batch_size, seq_len, d_model)
             - new_state: shape (batch_size, ssm_state_dim)
         """
-        B, T, d = x.shape
+        B, T, d = x_in.shape
 
         if state is None:
-            # Initialize state to zeros
-            state = torch.zeros(B, self.ssm_state_dim, device=x.device, dtype=x.dtype)
+            # Initialize state to zeros as specified
+            state = torch.zeros(
+                B, self.ssm_state_dim, device=x_in.device, dtype=x_in.dtype
+            )
+        else:
+            state = state.clone()
 
-        # Compute input projections B(x_t) for SSM
-        u = self.B(x)  # (B, T, ssm_state_dim)
+        # alpha = torch.tanh(self.A) to keep it stable in (-1,1) as specified
+        alpha = torch.tanh(self.A)  # (d_s,)
 
         # Initialize output tensor
         outputs = []
         current_state = state
 
-        # Sequential SSM update (more stable than parallel for training)
-        for i in range(T):
-            # SSM update: s_t = A * s_{t-1} + B * u_t
-            current_state = self.A * current_state + u[:, i, :]
-            outputs.append(current_state)
+        # Sequential SSM update: loop over t = 0..T-1
+        for t in range(T):
+            # SSM update: s_t = alpha * s_{t-1} + B(x_in[:, t, :])
+            current_state = alpha * current_state + self.B(x_in[:, t, :])  # (B, d_s)
+            # SSM output: y_ssm[:, t, :] = C(s_t)
+            outputs.append(self.C(current_state))  # (B, d_model)
 
-        # Stack outputs
-        ssm_states = torch.stack(outputs, dim=1)  # (B, T, ssm_state_dim)
+        # Stack outputs to get (B, T, d_model)
+        ssm_output = torch.stack(outputs, dim=1)
 
-        # Compute SSM output C(s_t)
-        ssm_output = self.C(ssm_states)  # (B, T, d_model)
+        # Apply dropout
         ssm_output = self.drop(ssm_output)
 
         return ssm_output, current_state
@@ -214,7 +225,7 @@ class DPASSMBlock(nn.Module):
         # 1. Local attention path (windowed causal attention)
         attention_out = self._compute_attention(x_norm1, mask)
 
-        # 2. SSM path (global state-space model)
+        # 2. SSM path (global state-space model) - uses same pre-normed input as attention
         ssm_out, new_ssm_state = self._compute_ssm(x_norm1, ssm_state)
 
         # 3. Fuse attention and SSM outputs with learnable gate
