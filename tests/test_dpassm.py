@@ -464,3 +464,174 @@ class TestDPASSMBlock:
         x_wrong = torch.randn(batch_size, 2, d_model)  # Wrong: T=2 instead of T=1
         with pytest.raises(AssertionError):
             model.forward_step(x_wrong)
+
+    def test_shape_to_heads_basic(self, model: DPASSMBlock) -> None:
+        """Test basic functionality of _shape_to_heads method."""
+        batch_size, seq_len = 4, 16
+
+        # Create input tensor
+        x = torch.randn(batch_size, seq_len, model.d_model)
+
+        # Apply the method
+        result = model._shape_to_heads(x)
+
+        # Check output shape: (B, n_heads, T, d_model // n_heads)
+        expected_head_dim = model.d_model // model.n_heads
+        expected_shape = (batch_size, model.n_heads, seq_len, expected_head_dim)
+
+        assert result.shape == expected_shape
+        assert result.dtype == x.dtype
+        assert result.device == x.device
+
+    def test_shape_to_heads_data_consistency(self, model: DPASSMBlock) -> None:
+        """Test that _shape_to_heads preserves data consistency."""
+        batch_size, seq_len = 2, 8
+
+        # Create input with known values
+        x = torch.ones(batch_size, seq_len, model.d_model)
+
+        # Apply the method
+        result = model._shape_to_heads(x)
+
+        # All values should still be 1.0 (just reshaped)
+        assert torch.all(torch.abs(result - 1.0) < 1e-6)
+
+        # Test with random values - reshaping should preserve sum
+        x_random = torch.randn(batch_size, seq_len, model.d_model)
+        original_sum = x_random.sum()
+        result_sum = model._shape_to_heads(x_random).sum()
+
+        assert torch.allclose(original_sum, result_sum, atol=1e-6)
+
+    def test_shape_to_heads_edge_cases(self, model_params: dict[str, int]) -> None:
+        """Test _shape_to_heads with edge cases."""
+        # Test with single head
+        model_single_head = DPASSMBlock(
+            d_model=model_params["d_model"],
+            n_heads=1,
+            window_size=model_params["window_size"],
+            ssm_state_dim=model_params["ssm_state_dim"],
+            dropout=model_params["dropout"],
+        )
+
+        # Test with single sequence length
+        x_single = torch.randn(2, 1, model_params["d_model"])
+        result = model_single_head._shape_to_heads(x_single)
+
+        expected_shape = (2, 1, 1, model_params["d_model"])
+        assert result.shape == expected_shape
+
+        # Test with single batch
+        model_single_batch = DPASSMBlock(**model_params)
+        x_single_batch = torch.randn(1, 8, model_params["d_model"])
+        result = model_single_batch._shape_to_heads(x_single_batch)
+
+        expected_shape = (
+            1,
+            model_params["n_heads"],
+            8,
+            model_params["d_model"] // model_params["n_heads"],
+        )
+        assert result.shape == expected_shape
+
+    def test_shape_to_heads_various_dimensions(
+        self, model_params: dict[str, int]
+    ) -> None:
+        """Test _shape_to_heads with various dimension combinations."""
+        d_model = model_params["d_model"]
+        n_heads = model_params["n_heads"]
+
+        model = DPASSMBlock(**model_params)
+
+        # Test different batch sizes
+        for batch_size in [1, 2, 4, 8]:
+            x = torch.randn(batch_size, 12, d_model)
+            result = model._shape_to_heads(x)
+
+            expected_shape = (batch_size, n_heads, 12, d_model // n_heads)
+            assert result.shape == expected_shape
+
+        # Test different sequence lengths
+        for seq_len in [1, 4, 8, 16, 32]:
+            x = torch.randn(3, seq_len, d_model)
+            result = model._shape_to_heads(x)
+
+            expected_shape = (3, n_heads, seq_len, d_model // n_heads)
+            assert result.shape == expected_shape
+
+    def test_shape_to_heads_different_head_counts(
+        self, model_params: dict[str, int]
+    ) -> None:
+        """Test _shape_to_heads with different head counts."""
+        d_model = model_params["d_model"]
+
+        # Test with different head counts that divide d_model evenly
+        valid_head_counts = [1, 2, 4, 8] if d_model == 64 else [1, 2, 4]
+
+        for n_heads in valid_head_counts:
+            if d_model % n_heads != 0:
+                continue  # Skip if d_model not divisible by n_heads
+
+            model = DPASSMBlock(
+                d_model=d_model,
+                n_heads=n_heads,
+                window_size=model_params["window_size"],
+                ssm_state_dim=model_params["ssm_state_dim"],
+                dropout=model_params["dropout"],
+            )
+
+            x = torch.randn(2, 8, d_model)
+            result = model._shape_to_heads(x)
+
+            expected_head_dim = d_model // n_heads
+            expected_shape = (2, n_heads, 8, expected_head_dim)
+
+            assert result.shape == expected_shape
+
+    def test_shape_to_heads_requires_grad(self, model: DPASSMBlock) -> None:
+        """Test that _shape_to_heads preserves requires_grad property."""
+        batch_size, seq_len = 2, 8
+
+        # Create input that requires gradients
+        x = torch.randn(batch_size, seq_len, model.d_model, requires_grad=True)
+
+        result = model._shape_to_heads(x)
+
+        # Result should also require gradients (since it's just reshaping)
+        assert result.requires_grad
+
+    def test_shape_to_heads_transpose_operation(self, model: DPASSMBlock) -> None:
+        """Test that the transpose operation in _shape_to_heads works correctly."""
+        batch_size, seq_len = 3, 12
+
+        # Create input with identifiable pattern
+        x = torch.zeros(batch_size, seq_len, model.d_model)
+
+        # Set specific values for each position to verify transpose
+        for b in range(batch_size):
+            for t in range(seq_len):
+                for d in range(model.d_model):
+                    x[b, t, d] = b * 1000 + t * 10 + d
+
+        result = model._shape_to_heads(x)
+
+        # Manually verify the reshape and transpose operation
+        # Original: (B, T, d_model)
+        # After view: (B, T, n_heads, d_model // n_heads)
+        # After transpose: (B, n_heads, T, d_model // n_heads)
+
+        head_dim = model.d_model // model.n_heads
+
+        # Check a few specific positions
+        for b in range(batch_size):
+            for h in range(model.n_heads):
+                for t in range(seq_len):
+                    for d in range(head_dim):
+                        original_idx = h * head_dim + d
+                        expected_value = b * 1000 + t * 10 + original_idx
+                        actual_value = result[b, h, t, d]
+
+                        assert actual_value == expected_value, (
+                            f"Transpose verification failed at position ({b}, {h}, {t}, {d}). "
+                            f"Expected {expected_value}, got {actual_value}"
+                        )
