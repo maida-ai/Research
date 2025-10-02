@@ -1,0 +1,6 @@
+---
+alwaysApply: true
+---
+
+* Never run `git add`, `git commit`, or any other git command that changes the commit tree
+* When creating tags, check if you are in the `main` branch. If not, ask the user
