@@ -36,13 +36,11 @@ test:
 # Run linting checks
 lint:
 	uv run ruff check .
-	uv run black --check .
 	uv run isort --check-only .
 
 # Format code
 format:
 	uv run ruff check --fix .
-	uv run black .
 	uv run isort .
 
 # Clean up generated files
