@@ -54,6 +54,8 @@ Together, these reduce effective complexity while staying competitive on tasks r
 
 ### 1) BLADE - Block-Local Attention with Per-Block State
 
+See: [docs/methods/blade.md](docs/methods/blade.md)
+
 **Intuition.** Treat the sequence as **local, dense clusters** (chunks) with a **compact state** flowing between them.
 
 **Mechanics.**
@@ -79,6 +81,8 @@ y, new_state = block(x, state=None)
 
 
 ### 2) DP-ASSM - Dual-Path (Local Attention + SSM) with Gated Fusion
+
+See: [docs/methods/dpassm.md](docs/methods/dpassm.md)
 
 **Intuition.** Keep exact local interactions; capture the long tail with a **linear-time SSM** and **blend** the two.
 
