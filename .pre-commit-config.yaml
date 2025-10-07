@@ -33,8 +33,14 @@ repos:
     rev: v0.13.2
     hooks:
       - id: ruff-check
-        args: [--fix]
+        args: [
+          --fix,
+          --config=.ruff.toml
+        ]
       - id: ruff-format
+        args: [
+          --config=.ruff.toml
+        ]
         types_or: [ python, pyi ]
 
   - repo: local
@@ -44,7 +50,7 @@ repos:
         entry: uv run pytest
         language: system
         pass_filenames: false
-        always_run: true
+        types_or: [ python, pyi ]
         args: [
           --config-file=.pytest.ini,
           -m not integration and not slow,
@@ -57,7 +63,7 @@ repos:
         entry: uv run pytest
         language: system
         pass_filenames: false
-        always_run: true
+        types_or: [ python, pyi ]
         args: [
             --config-file=.pytest.ini,
             --cov-config=.coveragerc,
