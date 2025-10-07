@@ -1,0 +1,30 @@
+[run]
+source =
+    ; Main package to cover
+    efficient_longctx
+omit =
+    ; Tests and test-related files
+    */tests/*
+    */test_*
+    */__pycache__/*
+    ; Constants file -- no need to cover
+    */constants.py
+
+[report]
+exclude_also =
+    ; Exclude debugging statements
+    def __repr__
+    if self.debug:
+    if settings.DEBUG
+    ; Non runnable code
+    if 0:
+    if __name__ == .__main__.:
+    ; Don't complain if tests don't hit defensive assertions
+    raise AssertionError
+    raise NotImplementedError
+    ; Abstract method and not implemented methods
+    @(abc\\.)?abstractmethod
+    ; Constants
+    __version__
+    __author__
+    __email__
