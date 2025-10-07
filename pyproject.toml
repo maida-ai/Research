@@ -65,24 +65,15 @@ members = [
 [tool.uv.sources]
 efficient-longctx = { workspace = true }
 
-# [tool.uv.workspace]
-# members = [
-#     "evals/harness",
-#     "packages/domain",
-#     "packages/gcp-secrets",
-#     "packages/security",
-#     "runners/ephemeral",
-#     "services/github-app",
-#     "services/metrics-api",
-#     "services/orchestrator",
-#     "services/report-publisher",
-# ]
-# exclude = []
-
-
 # =============
 # Lint and Test
 # =============
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+known_first_party = ["efficient_longctx"]
 
 [tool.ruff]
 line-length = 88
@@ -97,12 +88,6 @@ extend-exclude = [
   "build",
   "dist",
 ]
-
-[tool.isort]
-profile = "black"
-multi_line_output = 3
-line_length = 88
-known_first_party = ["efficient_longctx"]
 
 [tool.ruff.lint]
 select = [
@@ -122,42 +107,3 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py", "*_test.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
-addopts = [
-    "--strict-markers",
-    "--strict-config",
-    "--cov=efficient_longctx",
-    "--cov-report=term-missing",
-    # "--cov-report=html",
-    # "--cov-report=xml",
-]
-
-[tool.coverage.run]
-source = ["efficient_longctx"]
-omit = [
-    # "*/__init__.py",
-    "*/tests/*",
-    "*/test_*",
-    "*/__pycache__/*",
-    "*/constants.py",
-]
-
-[tool.coverage.report]
-exclude_lines = [
-    "pragma: no cover",
-    "def __repr__",
-    "if self.debug:",
-    "if settings.DEBUG",
-    "if 0:",
-    "if __name__ == .__main__.:",
-    "class .*\\bProtocol\\):",
-    "@(abc\\.)?abstractmethod",
-    "__version__",
-    "__author__",
-    "__email__",
-]
