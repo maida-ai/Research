@@ -122,6 +122,39 @@ We include scripts to measure **quality**, **latency**, and **memory** under inc
    * **Copy/recall:** reproduce a distant subsequence.
    * **Drift curves:** track performance vs. input length (e.g., 16K -> 1M) with streaming prefill.
 
+   **Example commands:**
+   ```bash
+   # Passkey retrieval task
+   python -m efficient_longctx.evals.synthetic \
+     --task passkey --seq_len 32768 --max_len 131072 \
+     --block dpassm --device cuda
+
+   # Copy/recall task
+   python -m efficient_longctx.evals.synthetic \
+     --task copy_recall --seq_len 32768 --max_len 131072 \
+     --block blade --device cuda
+
+   # Drift curve task (generates PNG plots)
+   python -m efficient_longctx.evals.synthetic \
+     --task drift_curve --seq_len 32768 --max_len 131072 \
+     --block dpassm --device cuda
+
+   # CPU-friendly mode for testing
+   python -m efficient_longctx.evals.synthetic \
+     --task passkey --seq_len 1024 --max_len 1024 \
+     --block dpassm --cpu_mode
+
+   # With lightweight pretraining (improves accuracy)
+   python -m efficient_longctx.evals.synthetic \
+     --task passkey --seq_len 32768 --max_len 131072 \
+     --block dpassm --pretrain_steps 100 --device cuda
+
+   # Using pretrained embeddings (e.g., GPT-2)
+   python -m efficient_longctx.evals.synthetic \
+     --task copy_recall --seq_len 32768 --max_len 131072 \
+     --block blade --pretrained_model gpt2 --pretrain_steps 50 --device cuda
+   ```
+
 2. **Long-document QA**
 
    * Public-domain books or converted PDFs; ask questions far from answers.
