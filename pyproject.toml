@@ -27,9 +27,11 @@ dependencies = [
     "einops~=0.8.1",
     # "triton~=3.4.0",
     "matplotlib~=3.10.6",
+    "tensorboard~=2.20.0",
     # FlashAttention
     # "setuptools",
     "flash-attn~=2.8.3",
+    "lightning[extra]~=2.5.5",
 ]
 
 [dependency-groups]

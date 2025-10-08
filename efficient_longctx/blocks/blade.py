@@ -32,6 +32,7 @@ class BLADEBlock(nn.Module):
         state_dim: Dimension of the per-chunk state
         m_global: Number of global tokens (0 to disable)
         dropout: Dropout probability
+        **kwargs: All other keyword arguments are ignored
     """
 
     def __init__(
@@ -42,6 +43,7 @@ class BLADEBlock(nn.Module):
         state_dim: int,
         m_global: int = 0,
         dropout: float = 0.1,
+        **kwargs,
     ):
         super().__init__()
 

@@ -9,6 +9,14 @@ class DPASSMBlock(nn.Module):
 
     Combines windowed local attention with a global state-space path,
     then fuses via a learnable gate.
+
+    Args:
+        d_model: Model dimension
+        n_heads: Number of attention heads
+        window_size: Window size for attention
+        ssm_state_dim: Dimension of the SSM state
+        dropout: Dropout probability
+        **kwargs: All other keyword arguments are ignored
     """
 
     def __init__(
@@ -18,6 +26,7 @@ class DPASSMBlock(nn.Module):
         window_size: int,
         ssm_state_dim: int,
         dropout: float = 0.1,
+        **kwargs,
     ):
         super().__init__()
 

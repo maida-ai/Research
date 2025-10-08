@@ -9,6 +9,8 @@ omit =
     */__pycache__/*
     ; Constants file -- no need to cover
     */constants.py
+    ; Training script -- now covered by tests
+    ; */training/train.py
 
 [report]
 show_missing = true
