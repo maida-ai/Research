@@ -14,12 +14,13 @@ omit =
 show_missing = true
 exclude_also =
     ; Exclude debugging statements
-    def __repr__
+    \s+def __repr__
     if self.debug:
     if settings.DEBUG
     ; Non runnable code
     if 0:
     if __name__ == .__main__.:
+    ^def main\(
     ; Don't complain if tests don't hit defensive assertions
     raise AssertionError
     raise NotImplementedError

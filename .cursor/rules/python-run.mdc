@@ -1,5 +1,5 @@
 ---
-description: When running python commands
+description: When running python and pytest commands
 alwaysApply: false
 ---
 - To run python commands use `uv run`

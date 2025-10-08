@@ -1,5 +1,6 @@
 # Reports -- for now we can ignore reporting
 reports/
+artifacts/
 
 # Environment
 .venv/
