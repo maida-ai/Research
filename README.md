@@ -236,11 +236,12 @@ We include scripts to measure **quality**, **latency**, and **memory** under inc
 efficient-longctx/
 ├── efficient_longctx/          # Main package
 │   ├── blocks/                 # Attention blocks (BLADE, DP-ASSM, baselines)
+│   ├── models/                 # Any custom models that we use for evaluation / benchmarking
 │   ├── training/               # Training utilities
 │   ├── evals/                  # Evaluation utilities (synthetic, long-doc, profiling)
 │   └── utils/                  # Utility functions
 ├── tests/                      # Test suite
-├── examples/                   # Example notebooks
+├── examples/                   # Example notebooks and scripts -- All examples must be here
 ├── docs/                       # Documentation (method cards, diagrams)
 ├── reports/                    # Analysis and benchmarks (CSV, plots)
 └── scripts/                    # Utility scripts
