@@ -27,11 +27,14 @@ help:
 setup:
 	@UV_VENV_CLEAR=$(UV_VENV_CLEAR) uv venv "$(VIRTUAL_ENV)"
 	@uv sync --group dev --all-packages --frozen
-	@uv run pre-commit install
+	@uv run pre-commit install \
+		--hook-type pre-commit \
+		--hook-type pre-push
+	@git config --local core.commentChar ';'
 
 # Run tests
 test:
-	uv run pytest -q
+	uv run pytest -q --cov
 
 # Run linting checks
 lint:

@@ -1,3 +1,6 @@
+# Reports -- for now we can ignore reporting
+reports/
+
 # Environment
 .venv/
 venv/

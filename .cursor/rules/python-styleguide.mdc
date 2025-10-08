@@ -41,15 +41,17 @@ alwaysApply: false
 3. **Optional dependencies**: Use extras for optional features
 4. **Documentation**: Update installation instructions
 
-## Testing
-- Run tests with `.pytest.ini` config
-- All tests must reside under `.../tests/` folder
+## Tests
+- All tests must reside under `tests/` folder
 - Unit tests for all new functionality
 - Test both sync and async forward methods
 - **Type validation tests** - ensure Pydantic models work correctly (if applicable)
 - **Edge case testing** - test invalid inputs and type mismatches
 - Aim for >90% test coverage
 - Include edge cases and error conditions in the tests
+- Mark tests:
+  - Integration: `@pytest.mark.integration`
+  - Async: `@pytest.mark.asyncio`
 
 ## Documentation
 - Every module, class, and method must have a comprehensive docstring

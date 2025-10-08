@@ -11,6 +11,7 @@ omit =
     */constants.py
 
 [report]
+show_missing = true
 exclude_also =
     ; Exclude debugging statements
     def __repr__

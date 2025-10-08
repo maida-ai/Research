@@ -2,16 +2,16 @@ default_stages:
   - pre-commit
 
 repos:
-  - repo: local
-    hooks:
-      - id: git-config
-        name: Modify git config
-        description: Modify git config to use ; as comment character
-        language: system
-        pass_filenames: false
-        entry:
-          git config --local core.commentChar ';'
-        always_run: true
+  # - repo: local
+  #   hooks:
+  #     - id: git-config
+  #       name: Modify git config
+  #       description: Modify git config to use ; as comment character
+  #       language: system
+  #       pass_filenames: false
+  #       entry:
+  #         git config --local core.commentChar ';'
+  #       always_run: true
 
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
