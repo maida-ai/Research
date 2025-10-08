@@ -10,3 +10,5 @@ alwaysApply: false
     - `coverage` tool imports modules twice, which might cause issues
     - For example, if running coverage that includes pytorch, running coverage on specific files will cause pytorch to fail.
     - To fix, run `uv run pytest --cov` to cover everything (avoid running `uv run pytest --cov=some.module.path` as it will break pytorch)
+- To run lints and checks
+    - use `uv run ruff check` to identify any linting problems
