@@ -7,6 +7,7 @@ parsing, configuration files, and subcommands.
 
 import logging
 
+import torch
 from lightning import Trainer, seed_everything
 from lightning.pytorch.callbacks import (
     Callback,
@@ -17,6 +18,8 @@ from lightning.pytorch.cli import LightningCLI
 
 from efficient_longctx.models.data import LongCtxDataModule
 from efficient_longctx.models.models import LongCtxLightningModule
+
+torch.set_float32_matmul_precision("medium")
 
 
 class MetricsCallback(Callback):

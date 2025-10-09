@@ -1,6 +1,6 @@
 # Quick correctness checks (to sharpen the problem statement)
 
-* **What’s actually quadratic?** During *training*, the attention score matrix (QK^\top) is (L\times L) per head and drives (O(L^2)) compute/memory. During *autoregressive inference*, we don’t materialize/store the full (L\times L) map; we store a **KV cache** of size (O(Ld)) and each new token costs (O(Ld)) to attend over the cache. This nuance matters because many “speedups” either target training IO/compute (e.g., FlashAttention) or inference memory (e.g., KV-cache compression/eviction). ([arXiv][1])
+* **What's actually quadratic?** During *training*, the attention score matrix (QK^\top) is (L\times L) per head and drives (O(L^2)) compute/memory. During *autoregressive inference*, we don't materialize/store the full (L\times L) map; we store a **KV cache** of size (O(Ld)) and each new token costs (O(Ld)) to attend over the cache. This nuance matters because many “speedups” either target training IO/compute (e.g., FlashAttention) or inference memory (e.g., KV-cache compression/eviction). ([arXiv][1])
 
 * **“Sparse or tiny probabilities ⇒ noisy generations.”** Empirically, long-context failures stem more from *recency bias* and *how caches are managed* than from “tiny probs” per se. For example, **StreamingLLM** shows that keeping a small set of “attention sink” tokens + recent tokens stabilizes generation over millions of tokens without fine-tuning. Framing the issue as *information routing and memory management* (not just probability mass) aligns better with prior evidence. ([arXiv][2])
 
@@ -10,8 +10,8 @@
 
 * **Very close cousins.**
 
-  * **Compressive Transformer**: retains a short uncompressed memory and *compresses* older activations with pooling/conv, trained with an auxiliary reconstruction loss so long-term info remains useful. That’s almost the same “blur over time” intuition you propose. ([arXiv][3])
-  * **Infini-attention**: fuses *local masked attention* with a **compressive memory + linear long-range pathway** in the same block, enabling effectively unbounded context at bounded cost. It’s another principled realization of “dense local, cheap global.” ([arXiv][4])
+  * **Compressive Transformer**: retains a short uncompressed memory and *compresses* older activations with pooling/conv, trained with an auxiliary reconstruction loss so long-term info remains useful. That's almost the same “blur over time” intuition you propose. ([arXiv][3])
+  * **Infini-attention**: fuses *local masked attention* with a **compressive memory + linear long-range pathway** in the same block, enabling effectively unbounded context at bounded cost. It's another principled realization of “dense local, cheap global.” ([arXiv][4])
   * **Hierarchical/Multiscale attention**: **H-Transformer-1D** builds a **multi-resolution hierarchy** to get linear complexity and does well on LRA; conceptually akin to your Laplacian/UNet framing. ([ACL Anthology][5])
 
 * **What to borrow explicitly.**
@@ -32,9 +32,9 @@
   * **Local/block attention**: **Longformer** (sliding windows + optional global tokens) and **BigBird** (local + random + global) reduce cost to near-linear and prove strong theory (universal approximation / Turing completeness) *if* a few globals exist. Your (O(L^2/k)) within-block complexity matches this family. ([arXiv][7])
   * **Latent bottlenecks**: **Perceiver/Perceiver IO** compress tokens into a latent array via cross-attention, then decode—this is a powerful “reconstruction layer” pattern that avoids recomputing full global maps. ([arXiv][8])
 
-* **What you’ll need beyond pure blocking.**
+* **What you'll need beyond pure blocking.**
 
-  1. **Cross-block mixing** so information isn’t trapped: e.g., **shifted windows** (vision analogy), a *few* **global tokens** (BigBird), or a small **latent set** (Perceiver IO). This keeps quality while preserving (O(L^2/k)+O(kL)). ([NeurIPS Papers][6])
+  1. **Cross-block mixing** so information isn't trapped: e.g., **shifted windows** (vision analogy), a *few* **global tokens** (BigBird), or a small **latent set** (Perceiver IO). This keeps quality while preserving (O(L^2/k)+O(kL)). ([NeurIPS Papers][6])
   2. **IO-aware kernels**: if you still run exact attention within blocks, pair with **FlashAttention** during training to convert “theory wins” into wall-clock wins. ([arXiv][1])
 
 # Context in the broader landscape (to position novelty)
@@ -53,7 +53,7 @@
 
 * **Where the pyramid lives:** (a) outside attention as an auxiliary memory (Compressive-style), or (b) *inside each block* with dual paths (Infini-attention). The latter simplifies integration and lets you train end-to-end. ([arXiv][3])
 * **What gets downsampled:** keys, values, or hidden states? If you compress *values* (semantic content) but keep *keys* for addressing, you often preserve retrieval while saving memory.
-* **Losses & routing:** add a **reconstruction/objective on compressed memory** and a **gating policy** to decide when a token is “promoted” to high-res or “demoted” to low-res. Compressive Transformer’s auxiliary loss is a plug-and-play starting point. ([arXiv][3])
+* **Losses & routing:** add a **reconstruction/objective on compressed memory** and a **gating policy** to decide when a token is “promoted” to high-res or “demoted” to low-res. Compressive Transformer's auxiliary loss is a plug-and-play starting point. ([arXiv][3])
 * **Safety valve for verbatim needs:** include *a few* **global tokens** or a tiny **latent bottleneck** to keep theoretical expressivity and practical recall. ([NeurIPS Papers][6])
 
 ## 2) k-way grouping + reconstruction
@@ -67,7 +67,7 @@
 
 * **Quality under very long contexts**: LRA (sanity check), 1M-token passkey retrieval / book-level summarization (as in Infini-attention), and **streaming stability** analyses from StreamingLLM (does quality drift as length grows?). ([arXiv][4])
 * **Exact-recall stress tests**: math/code long-range dependencies and “quote-back” tasks to catch failures of excessive blurring (compare against a kNN/associative-memory ablation). ([arXiv][12])
-* **System metrics**: wall-clock speed, HBM traffic, and memory footprints (FlashAttention style IO accounting) so gains aren’t only asymptotic. ([arXiv][1])
+* **System metrics**: wall-clock speed, HBM traffic, and memory footprints (FlashAttention style IO accounting) so gains aren't only asymptotic. ([arXiv][1])
 * **Ablations**: pyramid depth, downsampling ratio, which tensors are compressed (K vs V vs states), number of global tokens/latent slots, and group size (L/k).
 
 # Suggested reframes to strengthen novelty & clarity
@@ -76,7 +76,7 @@
 2. **Position Solution 2 as** *Block-local Attention with Lightweight Global Reconstruction* and claim simplicity + strong baselines vs Longformer/BigBird/Perceiver-style bottlenecks. ([arXiv][7])
 3. **State the bet:** *“Dense local, compressive global* outperforms *purely sparse* or *purely linear* approximations at equal compute.” Then design experiments that hold FLOPs/memory constant across baselines.
 
-If you’d like, I can turn this into a one-page **“Related Work & Design Rationale”** section with crisp citations and a figure that situates your method among Compressive/Infini/BigBird/Perceiver families.
+If you'd like, I can turn this into a one-page **“Related Work & Design Rationale”** section with crisp citations and a figure that situates your method among Compressive/Infini/BigBird/Perceiver families.
 
 [1]: https://arxiv.org/abs/1911.05507?utm_source=chatgpt.com "Compressive Transformers for Long-Range Sequence ..."
 [2]: https://arxiv.org/abs/2404.07143?utm_source=chatgpt.com "Efficient Infinite Context Transformers with Infini-attention"

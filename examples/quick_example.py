@@ -21,7 +21,7 @@ print(f"Small model: {model.get_num_params():,} parameters")
 print("\n=== Factory Function ===")
 large_model = create_model(
     vocab_size=1000,
-    params="150m",
+    num_params="150m",
     block_type="dpassm",
     block_kwargs={"window_size": 32, "ssm_state_dim": 64},
 )

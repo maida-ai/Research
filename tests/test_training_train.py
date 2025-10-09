@@ -20,7 +20,7 @@ from efficient_longctx.utils.constants import has_cuda
 def small_lightning_module():
     """Pre-created small Lightning module for testing."""
     module = LongCtxLightningModule(
-        params="150m",
+        num_params="150m",
         block="vanilla",
         window_size=16,
         learning_rate=1e-3,
@@ -71,7 +71,7 @@ class TestLongCtxLightningModule:
     def test_lightning_module_initialization(self):
         """Test Lightning module initialization."""
         lightning_module = LongCtxLightningModule(
-            params="150m",
+            num_params="150m",
             block="vanilla",
             learning_rate=1e-3,
             weight_decay=0.01,
@@ -79,7 +79,7 @@ class TestLongCtxLightningModule:
             max_steps=1000,
         )
 
-        assert lightning_module.params == "150m"
+        assert lightning_module.num_params == "150m"
         assert lightning_module.block == "vanilla"
         assert lightning_module.learning_rate == 1e-3
         assert lightning_module.weight_decay == 0.01
@@ -246,7 +246,7 @@ class TestIntegration:
         )
 
         lightning_module = LongCtxLightningModule(
-            params=num_params,
+            num_params=num_params,
             block=block_type,
             learning_rate=1e-3,
         )

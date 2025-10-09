@@ -27,5 +27,8 @@ ignore = [
     "C901",  # too complex
 ]
 
+[lint.isort]
+case-sensitive = true
+
 [lint.per-file-ignores]
 "__init__.py" = ["F401"]

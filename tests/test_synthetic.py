@@ -73,16 +73,29 @@ class TestSyntheticDatasets:
 class TestSimpleModel:
     """Test simple model for synthetic evaluations."""
 
-    def test_dpassm_model(self):
-        """Test DP-ASSM model."""
+    @pytest.mark.parametrize(
+        "block_type",
+        ["dpassm", "blade", "vanilla", "baseline_longformer", "baseline_bigbird"],
+    )
+    def test_model(self, block_type):
+        """Test different model types."""
+        # Set up block-specific parameters
+        block_kwargs = {
+            "ssm_state_dim": 16,
+            "window_size": 32,
+            "chunk_size": 32,
+            "state_dim": 16,
+            "n_global_tokens": 2,
+            "n_random_tokens": 4,
+        }
+
         model = SimpleModel(
             vocab_size=100,
             d_model=64,
             n_heads=4,
             n_layers=1,
-            block_type="dpassm",
-            window_size=32,
-            ssm_state_dim=16,
+            block_type=block_type,
+            block_kwargs=block_kwargs,
         )
 
         batch_size, seq_len = 2, 10
@@ -103,6 +116,47 @@ class TestSimpleModel:
             block_type="blade",
             chunk_size=32,
             state_dim=16,
+        )
+
+        batch_size, seq_len = 2, 10
+        input_ids = torch.randint(0, 100, (batch_size, seq_len))
+
+        logits = model(input_ids)
+
+        # Check output shape
+        assert logits.shape == (batch_size, seq_len, 100)
+
+    def test_longformer_model(self):
+        """Test Longformer model."""
+        model = SimpleModel(
+            vocab_size=100,
+            d_model=64,
+            n_heads=4,
+            n_layers=1,
+            block_type="baseline_longformer",
+            window_size=32,
+            n_global_tokens=2,
+        )
+
+        batch_size, seq_len = 2, 10
+        input_ids = torch.randint(0, 100, (batch_size, seq_len))
+
+        logits = model(input_ids)
+
+        # Check output shape
+        assert logits.shape == (batch_size, seq_len, 100)
+
+    def test_bigbird_model(self):
+        """Test BigBird model."""
+        model = SimpleModel(
+            vocab_size=100,
+            d_model=64,
+            n_heads=4,
+            n_layers=1,
+            block_type="baseline_bigbird",
+            window_size=32,
+            n_global_tokens=2,
+            n_random_tokens=4,
         )
 
         batch_size, seq_len = 2, 10
@@ -392,6 +446,69 @@ class TestIntegration:
             n_layers=1,
             chunk_size=16,
             state_dim=16,
+            subsequence_len=3,
+        )
+
+        # Check results structure
+        assert isinstance(results, dict)
+        assert 32 in results
+
+        # Check metrics structure
+        metrics = results[32]
+        assert "accuracy" in metrics
+        assert "total_correct" in metrics
+        assert "total_tokens" in metrics
+
+    @pytest.mark.integration
+    def test_copy_recall_task_longformer_integration(self):
+        """Test copy/recall task integration with Longformer."""
+        from efficient_longctx.evals.synthetic import run_copy_recall_task
+
+        results = run_copy_recall_task(
+            seq_len=32,
+            max_len=32,
+            model_path="",
+            block_type="baseline_longformer",
+            device="cpu",
+            pretrain_steps=0,
+            pretrained_model=None,
+            d_model=64,
+            n_heads=4,
+            n_layers=1,
+            window_size=16,
+            n_global_tokens=2,
+            subsequence_len=3,
+        )
+
+        # Check results structure
+        assert isinstance(results, dict)
+        assert 32 in results
+
+        # Check metrics structure
+        metrics = results[32]
+        assert "accuracy" in metrics
+        assert "total_correct" in metrics
+        assert "total_tokens" in metrics
+
+    @pytest.mark.integration
+    def test_copy_recall_task_bigbird_integration(self):
+        """Test copy/recall task integration with BigBird."""
+        from efficient_longctx.evals.synthetic import run_copy_recall_task
+
+        results = run_copy_recall_task(
+            seq_len=32,
+            max_len=32,
+            model_path="",
+            block_type="baseline_bigbird",
+            device="cpu",
+            pretrain_steps=0,
+            pretrained_model=None,
+            d_model=64,
+            n_heads=4,
+            n_layers=1,
+            window_size=16,
+            n_global_tokens=2,
+            n_random_tokens=4,
             subsequence_len=3,
         )
 

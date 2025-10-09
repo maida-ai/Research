@@ -32,7 +32,10 @@ def main() -> None:
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size")
     parser.add_argument("--max_epochs", type=int, default=1, help="Max epochs")
     parser.add_argument(
-        "--params", default="150m", choices=["150m", "250m", "350m"], help="Model size"
+        "--num_params",
+        default="150m",
+        choices=["150m", "250m", "350m"],
+        help="Model size",
     )
     parser.add_argument(
         "--block",
@@ -53,7 +56,7 @@ def main() -> None:
     # Create model
     model = create_model(
         vocab_size=vocab_size,
-        params=args.params,
+        num_params=args.num_params,
         block_type=args.block,
         block_kwargs={},
     )

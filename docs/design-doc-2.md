@@ -10,7 +10,7 @@ This unifies **local/block attention** (Longformer/BigBird) with a **chunkwise r
 ## 2) Architecture
 
 * **Intra-chunk:** causal attention with FlashAttention; complexity (k\cdot(L/k)^2 = O(L^2/k)) ([arXiv][10]).
-* **Per-block state:** each layer maintains a small state vector (h_i^{(\ell)}) for chunk (i); when processing (i!+!1), we **inject** (h_i^{(\ell)}) via (a) additive bias, (b) cross-attention from chunk tokens to the state, or (c) gating into MLP. Analogous to **Transformer-XL**’s segment recurrence but far cheaper than carrying full K/V ([ACL Anthology][11]).
+* **Per-block state:** each layer maintains a small state vector (h_i^{(\ell)}) for chunk (i); when processing (i!+!1), we **inject** (h_i^{(\ell)}) via (a) additive bias, (b) cross-attention from chunk tokens to the state, or (c) gating into MLP. Analogous to **Transformer-XL**'s segment recurrence but far cheaper than carrying full K/V ([ACL Anthology][11]).
 * **Global mixing (choose one):**
 
   1. **G tokens** (BigBird) always visible to all chunks;
