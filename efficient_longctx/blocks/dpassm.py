@@ -30,11 +30,18 @@ class DPASSMBlock(nn.Module):
     ):
         super().__init__()
 
+        # Head dimension validation
+        if d_model % n_heads != 0:
+            raise ValueError("d_model must be divisible by n_heads")
+
         self.d_model = d_model
         self.n_heads = n_heads
         self.window_size = window_size
         self.ssm_state_dim = ssm_state_dim
         self.dropout_rate = dropout
+
+        # Mask cache for performance
+        self._mask_cache = {}
 
         # Layer normalization layers (pre-LN for parallel paths)
         self.ln1 = nn.LayerNorm(d_model)
@@ -65,56 +72,32 @@ class DPASSMBlock(nn.Module):
         # Dropout
         self.drop = nn.Dropout(dropout)
 
-    def _shape_to_heads(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Reshape from (B, T, d) to (B, h, T, d_h) for multi-head attention.
+        # Attention state type alias
+        self.AttnState = tuple[torch.Tensor, torch.Tensor]  # (K_cache, V_cache)
 
-        Args:
-            x: Input tensor of shape (batch_size, seq_len, d_model)
-
-        Returns:
-            Reshaped tensor of shape (batch_size, n_heads, seq_len, head_dim)
-        """
-        B, T, d = x.shape
-        d_h = d // self.n_heads
-        return x.view(B, T, self.n_heads, d_h).transpose(1, 2)
-
-    def _build_window_mask(
-        self, T: int, W: int, device: torch.device, dtype: torch.dtype
-    ) -> torch.Tensor:
-        """
-        Build additive mask for windowed causal attention.
+    def _get_window_mask(self, T: int, W: int, device: torch.device) -> torch.Tensor:
+        """Get cached boolean window mask for SDPA.
 
         Args:
             T: Sequence length
             W: Window size
             device: Device for tensor creation
-            dtype: Data type for tensor creation
 
         Returns:
-            Mask tensor of shape (T, T) with 0 for allowed positions, -inf for disallowed
+            Boolean mask of shape (1, 1, T, T) where True = allowed positions
         """
-        # Create causal mask (j <= i)
-        i_indices = torch.arange(T, device=device, dtype=torch.long)
-        j_indices = torch.arange(T, device=device, dtype=torch.long)
-        i_grid, j_grid = torch.meshgrid(i_indices, j_indices, indexing="ij")
-        causal_mask = j_grid <= i_grid
+        key = (T, W, device)
+        if key in self._mask_cache:
+            return self._mask_cache[key]
 
-        # Create window mask ((i - j) < W)
-        window_mask = (i_grid - j_grid) < W
-
-        # Combine masks
-        combined_mask = causal_mask & window_mask
-
-        # Create additive mask (0 for allowed, -inf for disallowed)
-        mask = torch.zeros((T, T), device=device, dtype=dtype)
-        mask = mask.masked_fill(~combined_mask, float("-inf"))
-
+        i = torch.arange(T, device=device)[:, None]
+        j = torch.arange(T, device=device)[None, :]
+        band = (j <= i) & ((i - j) < W)  # causal + left window
+        mask = band.view(1, 1, T, T)  # bool mask: True=allowed
+        self._mask_cache[key] = mask
         return mask
 
-    def _compute_attention(
-        self, x: torch.Tensor, mask: torch.Tensor | None = None
-    ) -> torch.Tensor:
+    def _compute_attention(self, x: torch.Tensor, _unused=None) -> torch.Tensor:
         """
         Compute windowed causal attention using optimized SDPA.
 
@@ -124,8 +107,7 @@ class DPASSMBlock(nn.Module):
 
         Args:
             x: Input tensor of shape (batch_size, seq_len, d_model)
-            mask: Optional additive mask tensor of shape (seq_len, seq_len)
-                  with 0 for allowed positions and -inf for disallowed positions
+            _unused: Unused parameter for compatibility
 
         Returns:
             Attention output tensor of shape (batch_size, seq_len, d_model)
@@ -138,27 +120,19 @@ class DPASSMBlock(nn.Module):
         K = self.W_K(x).view(B, T, self.n_heads, d_h).transpose(1, 2)  # (B, h, T, d_h)
         V = self.W_V(x).view(B, T, self.n_heads, d_h).transpose(1, 2)  # (B, h, T, d_h)
 
-        # Set dropout based on training mode
-        dropout_p = self.dropout_rate if self.training else 0.0
+        # Use cached bool mask and causal fast-path
+        if self.window_size >= T:
+            attn_mask, is_causal = None, True
+        else:
+            attn_mask = self._get_window_mask(T, self.window_size, x.device)
+            is_causal = False
 
-        # Convert additive mask to boolean mask for SDPA
-        # Current mask: -inf for disallowed, 0 for allowed
-        # SDPA expects: True for allowed, False for masked out
-        attn_mask = None
-        if mask is not None:
-            # mask has -inf where attention should be blocked, 0 where allowed
-            # Convert to boolean: True where mask is 0 (allowed positions)
-            attn_mask = ~torch.isinf(mask)  # True where not -inf (allowed)
+        # Use single source of truth for dropout
+        p = self.drop.p if self.training else 0.0
 
         # Use PyTorch's optimized scaled_dot_product_attention
-        # This automatically selects the fastest backend (FlashAttention-2, etc.)
         attention_output = F.scaled_dot_product_attention(
-            Q,
-            K,
-            V,
-            attn_mask=attn_mask,
-            dropout_p=dropout_p,
-            is_causal=False,  # We provide explicit mask for windowed causal
+            Q, K, V, attn_mask=attn_mask, dropout_p=p, is_causal=is_causal
         )
 
         # Reshape back to (B, T, d)
@@ -174,7 +148,7 @@ class DPASSMBlock(nn.Module):
         self, x_in: torch.Tensor, state: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
-        Compute SSM recurrent update.
+        Compute SSM recurrent update with preallocated outputs.
 
         Implementation follows specification:
         - Uses pre-normed input x_in from LN1(x)
@@ -205,24 +179,24 @@ class DPASSMBlock(nn.Module):
         # alpha = torch.tanh(self.A) to keep it stable in (-1,1) as specified
         alpha = torch.tanh(self.A)  # (d_s,)
 
-        # Initialize output tensor
-        outputs = []
+        # Precompute B(x_in) once for efficiency
+        u = self.B(x_in)  # (B, T, d_s)
+
+        # Preallocate output tensor to avoid Python list overhead
+        y_ssm = torch.empty(B, T, self.d_model, device=x_in.device, dtype=x_in.dtype)
         current_state = state
 
         # Sequential SSM update: loop over t = 0..T-1
         for t in range(T):
-            # SSM update: s_t = alpha * s_{t-1} + B(x_in[:, t, :])
-            current_state = alpha * current_state + self.B(x_in[:, t, :])  # (B, d_s)
+            # SSM update: s_t = alpha * s_{t-1} + u_t
+            current_state = alpha * current_state + u[:, t, :]  # (B, d_s)
             # SSM output: y_ssm[:, t, :] = C(s_t)
-            outputs.append(self.C(current_state))  # (B, d_model)
-
-        # Stack outputs to get (B, T, d_model)
-        ssm_output = torch.stack(outputs, dim=1)
+            y_ssm[:, t, :] = self.C(current_state)  # (B, d_model)
 
         # Apply dropout
-        ssm_output = self.drop(ssm_output)
+        y_ssm = self.drop(y_ssm)
 
-        return ssm_output, current_state
+        return y_ssm, current_state
 
     def forward(
         self, x: torch.Tensor, ssm_state: torch.Tensor | None = None
@@ -231,7 +205,7 @@ class DPASSMBlock(nn.Module):
         Forward pass through DPASSM block.
 
         Implements the exact specification from issue #24:
-        - Feature-wise gate: g = torch.sigmoid(self.gate(x_in))
+        - Feature-wise gate: g = torch.sigmoid(self.gate(x_norm1))
         - Fuse: y = g * y_attn + (1.0 - g) * y_ssm
         - Residual 1: x = x + self.drop(y)
         - FFN with Pre-LN: x = x + self.drop(self.mlp(self.ln2(x)))
@@ -247,24 +221,18 @@ class DPASSMBlock(nn.Module):
         """
         B, T, d = x.shape
 
-        # Keep x_in for gate computation (before normalization)
-        x_in = x
-
         # Pre-layer normalization
         x_norm1 = self.ln1(x)
 
-        # Build window mask for attention
-        mask = self._build_window_mask(T, self.window_size, x.device, x.dtype)
-
         # Dual-path forward:
         # 1. Local attention path (windowed causal attention)
-        y_attn = self._compute_attention(x_norm1, mask)
+        y_attn = self._compute_attention(x_norm1)
 
         # 2. SSM path (global state-space model)
         y_ssm, new_ssm_state = self._compute_ssm(x_norm1, ssm_state)
 
-        # 3. Feature-wise gate: g = torch.sigmoid(self.gate(x_in))
-        g = torch.sigmoid(self.gate(x_in))  # shape (B,T,d)
+        # 3. Feature-wise gate: g = torch.sigmoid(self.gate(x_norm1)) - use pre-norm for stability
+        g = torch.sigmoid(self.gate(x_norm1))  # shape (B,T,d)
 
         # 4. Fuse: y = g * y_attn + (1.0 - g) * y_ssm
         y = g * y_attn + (1.0 - g) * y_ssm
@@ -278,82 +246,75 @@ class DPASSMBlock(nn.Module):
         return x, new_ssm_state
 
     def forward_step(
-        self, x_t: torch.Tensor, ssm_state: torch.Tensor | None = None
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        self,
+        x_t: torch.Tensor,
+        ssm_state: torch.Tensor | None = None,
+        attn_state: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         """
-        Streaming inference step - process one token at a time.
+        Streaming inference step - process one token at a time with KV cache.
 
         This method enables streaming inference by updating the model state
-        incrementally one token at a time, without needing the full sequence.
+        incrementally one token at a time, with proper attention to previous tokens
+        via KV cache.
 
         Args:
             x_t: Current token embedding of shape (batch_size, 1, d_model)
             ssm_state: Previous SSM state of shape (batch_size, ssm_state_dim)
+            attn_state: Previous attention state (K_cache, V_cache) of shape
+                       (batch_size, n_heads, cache_len, head_dim)
 
         Returns:
-            Tuple of (output_token, new_ssm_state) where:
+            Tuple of (output_token, new_ssm_state, new_attn_state) where:
             - output_token: shape (batch_size, 1, d_model)
             - new_ssm_state: shape (batch_size, ssm_state_dim)
+            - new_attn_state: (K_cache, V_cache) with updated cache
         """
         B, T_in, d = x_t.shape
         assert T_in == 1, f"forward_step expects T=1, got T={T_in}"
-
-        # Keep copy for residual connections
-        x_in = x_t
+        d_h = d // self.n_heads
 
         # Pre-layer normalization for the single token
         x_norm1 = self.ln1(x_t)  # (B, 1, d)
 
-        # Handle attention path for single token using optimized SDPA
-        # Since we have only 1 token, the window is effectively just itself
-        # We still compute attention in case we want to query previous context
-        d_h = d // self.n_heads
+        # Project current token Q, K, V
         Q = (
             self.W_Q(x_norm1).view(B, 1, self.n_heads, d_h).transpose(1, 2)
         )  # (B, h, 1, d_h)
-        K = (
-            self.W_K(x_norm1).view(B, 1, self.n_heads, d_h).transpose(1, 2)
-        )  # (B, h, 1, d_h)
-        V = (
-            self.W_V(x_norm1).view(B, 1, self.n_heads, d_h).transpose(1, 2)
-        )  # (B, h, 1, d_h)
+        K_new = self.W_K(x_norm1).view(B, 1, self.n_heads, d_h).transpose(1, 2)
+        V_new = self.W_V(x_norm1).view(B, 1, self.n_heads, d_h).transpose(1, 2)
 
-        # Set dropout based on training mode
-        dropout_p = self.dropout_rate if self.training else 0.0
+        # Update KV cache
+        if attn_state is None:
+            K_cache, V_cache = K_new, V_new
+        else:
+            K_cache, V_cache = attn_state
+            K_cache = torch.cat([K_cache, K_new], dim=2)[:, :, -self.window_size :, :]
+            V_cache = torch.cat([V_cache, V_new], dim=2)[:, :, -self.window_size :, :]
 
-        # Use optimized SDPA for single token attention
+        # Attend to cache (no future present, so no mask needed)
+        p = self.drop.p if self.training else 0.0
         y_attn = F.scaled_dot_product_attention(
-            Q, K, V, attn_mask=None, dropout_p=dropout_p, is_causal=False
-        )  # (B, h, 1, d_h)
+            Q, K_cache, V_cache, attn_mask=None, dropout_p=p, is_causal=False
+        )
+        y_attn = y_attn.transpose(1, 2).contiguous().view(B, 1, d)
+        y_attn = self.drop(self.W_O(y_attn))
 
-        y_attn = y_attn.transpose(1, 2).contiguous().view(B, 1, d)  # (B, 1, d)
-        y_attn = self.W_O(y_attn)  # (B, 1, d)
-        y_attn = self.drop(y_attn)
-
-        # Handle SSM path for single token
+        # SSM update (same logic as before)
         if ssm_state is None:
             ssm_state = torch.zeros(
                 B, self.ssm_state_dim, device=x_t.device, dtype=x_t.dtype
             )
-        else:
-            ssm_state = ssm_state.clone()
+        alpha = torch.tanh(self.A)
+        current_state = alpha * ssm_state + self.B(x_norm1[:, 0, :])
+        y_ssm = self.drop(self.C(current_state).unsqueeze(1))  # (B, 1, d)
 
-        # SSM update: s_t = alpha * s_{t-1} + B(x_norm1[0])
-        alpha = torch.tanh(self.A)  # (d_s,)
-        current_state = alpha * ssm_state + self.B(x_norm1[:, 0, :])  # (B, d_s)
-
-        # SSM output: y_ssm = C(s_t)
-        y_ssm = self.C(current_state).unsqueeze(1)  # (B, 1, d_model)
-        y_ssm = self.drop(y_ssm)
-
-        # Feature-wise gate computation
-        g = torch.sigmoid(self.gate(x_in))  # (B, 1, d)
-
-        # Fuse attention and SSM outputs
-        y = g * y_attn + (1.0 - g) * y_ssm  # (B, 1, d)
+        # Use pre-norm for gate (more stable)
+        g = torch.sigmoid(self.gate(x_norm1))  # (B, 1, d)
+        y = g * y_attn + (1.0 - g) * y_ssm
 
         # Apply residual connection
-        x_out = x_in + self.drop(y)  # (B, 1, d)
+        x_out = x_t + self.drop(y)  # (B, 1, d)
 
         # Pre-LN for MLP
         x_norm2 = self.ln2(x_out)  # (B, 1, d)
@@ -362,4 +323,4 @@ class DPASSMBlock(nn.Module):
         mlp_out = self.mlp(x_norm2)  # (B, 1, d)
         x_final = x_out + self.drop(mlp_out)  # (B, 1, d)
 
-        return x_final, current_state
+        return x_final, current_state, (K_cache, V_cache)

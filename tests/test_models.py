@@ -30,32 +30,6 @@ def small_model_config():
     }
 
 
-@pytest.fixture(scope="session")
-def test_models(small_model_config):
-    """Pre-created test models for reuse across tests."""
-    models = {}
-
-    # Create small test models for each block type
-    for block_type in ["vanilla", "dpassm", "blade"]:
-        if block_type == "dpassm":
-            block_kwargs = {"window_size": 16, "ssm_state_dim": 32}
-        elif block_type == "blade":
-            block_kwargs = {"chunk_size": 8, "state_dim": 16}
-        else:
-            block_kwargs = {}
-
-        models[block_type] = LongCtxModel(
-            vocab_size=small_model_config["vocab_size"],
-            d_model=small_model_config["d_model"],
-            n_layers=small_model_config["n_layers"],
-            n_heads=small_model_config["n_heads"],
-            block_type=block_type,
-            block_kwargs=block_kwargs,
-        )
-
-    return models
-
-
 class TestVanillaAttentionBlock:
     """Test the vanilla attention block."""
 
@@ -355,7 +329,7 @@ class TestCreateModel:
         """Test creating model with different parameter counts."""
         model = create_model(
             vocab_size=1000,
-            params=num_params,
+            num_params=num_params,
             block_type=block_type,
             block_kwargs={
                 "window_size": 16,
@@ -375,7 +349,7 @@ class TestCreateModel:
         with pytest.raises(ValueError, match="Unknown parameter count"):
             create_model(
                 vocab_size=1000,
-                params="500m",
+                num_params="500m",
                 block_type="vanilla",
                 block_kwargs={},
             )
@@ -438,7 +412,7 @@ class TestLongCtxLightningModule:
     def test_lightning_module_creation(self):
         """Test creating Lightning module."""
         module = LongCtxLightningModule()
-        assert module.params == "150m"
+        assert module.num_params == "150m"
         assert module.block == "dpassm"
         assert module.window_size == 2048
         assert module.ssm_state_dim == 256
@@ -453,7 +427,7 @@ class TestLongCtxLightningModule:
     def test_lightning_module_custom_params(self):
         """Test creating Lightning module with custom parameters."""
         module = LongCtxLightningModule(
-            params="250m",
+            num_params="250m",
             block="blade",
             window_size=1024,
             ssm_state_dim=128,
@@ -465,7 +439,7 @@ class TestLongCtxLightningModule:
             max_steps=50000,
             tokenizer_name="custom",
         )
-        assert module.params == "250m"
+        assert module.num_params == "250m"
         assert module.block == "blade"
         assert module.window_size == 1024
         assert module.ssm_state_dim == 128

@@ -20,8 +20,7 @@ import torch.nn as nn
 from tqdm import tqdm
 from transformers import AutoModel, AutoTokenizer
 
-from efficient_longctx.blocks.blade import BLADEBlock
-from efficient_longctx.blocks.dpassm import DPASSMBlock
+from efficient_longctx.models.models import get_layer
 
 
 class SyntheticDataset:
@@ -175,23 +174,18 @@ class SimpleModel(nn.Module):
 
         # Attention blocks
         self.blocks = nn.ModuleList()
+        kw_args = {
+            "window_size": 128,
+            "ssm_state_dim": 64,
+            "chunk_size": 128,
+            "state_dim": 64,
+            "n_global_tokens": 2,
+            "n_random_tokens": 4,
+        }
+        kw_args.update(block_kwargs)
+        block_cls = get_layer(block_type)
         for _ in range(n_layers):
-            if block_type == "dpassm":
-                block = DPASSMBlock(
-                    d_model=d_model,
-                    n_heads=n_heads,
-                    window_size=block_kwargs.get("window_size", 128),
-                    ssm_state_dim=block_kwargs.get("ssm_state_dim", 64),
-                )
-            elif block_type == "blade":
-                block = BLADEBlock(
-                    d_model=d_model,
-                    n_heads=n_heads,
-                    chunk_size=block_kwargs.get("chunk_size", 128),
-                    state_dim=block_kwargs.get("state_dim", 64),
-                )
-            else:
-                raise ValueError(f"Unknown block type: {block_type}")
+            block = block_cls(d_model=d_model, n_heads=n_heads, **kw_args)
             self.blocks.append(block)
 
         # Output projection
@@ -238,10 +232,15 @@ class SimpleModel(nn.Module):
 
         # Apply blocks
         for block in self.blocks:
-            if self.block_type == "dpassm":
+            if self.block_type in [
+                "dpassm",
+                "blade",
+                "baseline_longformer",
+                "baseline_bigbird",
+            ]:
                 x, state = block(x, state)
-            else:  # blade
-                x, state = block(x, state)
+            else:  # vanilla and other blocks that don't use state
+                x = block(x)
 
         x = self.ln_f(x)
         logits = self.lm_head(x)
@@ -359,17 +358,21 @@ def run_passkey_task(
 
     # Create dataset and model
     dataset = PasskeyDataset()
+    kw_args = {
+        "d_model": 256,
+        "n_heads": 8,
+        "n_layers": 2,
+        "window_size": 128,
+        "ssm_state_dim": 64,
+        "chunk_size": 128,
+        "state_dim": 64,
+    }
+    kw_args.update(kwargs)
     model = SimpleModel(
         vocab_size=1000,
-        d_model=kwargs.get("d_model", 256),
-        n_heads=kwargs.get("n_heads", 8),
-        n_layers=kwargs.get("n_layers", 2),
         block_type=block_type,
         pretrained_model=pretrained_model,
-        window_size=kwargs.get("window_size", 128),
-        ssm_state_dim=kwargs.get("ssm_state_dim", 64),
-        chunk_size=kwargs.get("chunk_size", 128),
-        state_dim=kwargs.get("state_dim", 64),
+        **kw_args,
     ).to(device)
 
     # Pretrain if requested
@@ -409,17 +412,21 @@ def run_copy_recall_task(
 
     # Create dataset and model
     dataset = CopyRecallDataset(subsequence_len=kwargs.get("subsequence_len", 5))
+    kw_args = {
+        "d_model": 256,
+        "n_heads": 8,
+        "n_layers": 2,
+        "window_size": 128,
+        "ssm_state_dim": 64,
+        "chunk_size": 128,
+        "state_dim": 64,
+    }
+    kw_args.update(kwargs)
     model = SimpleModel(
         vocab_size=1000,
-        d_model=kwargs.get("d_model", 256),
-        n_heads=kwargs.get("n_heads", 8),
-        n_layers=kwargs.get("n_layers", 2),
         block_type=block_type,
         pretrained_model=pretrained_model,
-        window_size=kwargs.get("window_size", 128),
-        ssm_state_dim=kwargs.get("ssm_state_dim", 64),
-        chunk_size=kwargs.get("chunk_size", 128),
-        state_dim=kwargs.get("state_dim", 64),
+        **kw_args,
     ).to(device)
 
     # Pretrain if requested
@@ -459,17 +466,21 @@ def run_drift_curve_task(
 
     # Create dataset and model
     dataset = DriftCurveDataset()
+    kw_args = {
+        "d_model": 256,
+        "n_heads": 8,
+        "n_layers": 2,
+        "window_size": 128,
+        "ssm_state_dim": 64,
+        "chunk_size": 128,
+        "state_dim": 64,
+    }
+    kw_args.update(kwargs)
     model = SimpleModel(
         vocab_size=1000,
-        d_model=kwargs.get("d_model", 256),
-        n_heads=kwargs.get("n_heads", 8),
-        n_layers=kwargs.get("n_layers", 2),
         block_type=block_type,
         pretrained_model=pretrained_model,
-        window_size=kwargs.get("window_size", 128),
-        ssm_state_dim=kwargs.get("ssm_state_dim", 64),
-        chunk_size=kwargs.get("chunk_size", 128),
-        state_dim=kwargs.get("state_dim", 64),
+        **kw_args,
     ).to(device)
 
     # Pretrain if requested
@@ -550,7 +561,7 @@ def main():  # pragma: no cover
     )
     parser.add_argument(
         "--block",
-        choices=["dpassm", "blade"],
+        choices=["dpassm", "blade", "baseline_longformer", "baseline_bigbird"],
         default="dpassm",
         help="Attention block type",
     )

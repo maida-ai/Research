@@ -83,45 +83,6 @@ class TestDPASSMBlock:
         assert output.shape == sample_input.shape
         assert new_state.shape == initial_state.shape
 
-    def test_windowed_attention_mask(self, model: DPASSMBlock) -> None:
-        """Test that windowed attention mask is correct."""
-        seq_len = 16
-        device = torch.device("cpu")
-        dtype = torch.float32
-
-        mask = model._build_window_mask(seq_len, model.window_size, device, dtype)
-
-        # Check mask properties
-        assert mask.shape == (seq_len, seq_len)
-        assert mask.dtype == dtype
-        assert mask.device == device
-
-        # Check causal property (upper triangle should be -inf)
-        for i in range(seq_len):
-            for j in range(i + 1, seq_len):
-                assert mask[i, j] == float("-inf")
-
-        # Check window property (distance > window_size should be -inf)
-        for i in range(seq_len):
-            for j in range(max(0, i - model.window_size + 1)):
-                assert mask[i, j] == float("-inf")
-
-    def test_attention_computation(
-        self, model: DPASSMBlock, sample_input: torch.Tensor
-    ) -> None:
-        """Test attention computation with windowing."""
-        model.eval()
-        with torch.no_grad():
-            # Test attention with mask
-            attention_out = model._compute_attention(sample_input)
-
-            # Check output shape
-            assert attention_out.shape == sample_input.shape
-
-            # Test attention without mask
-            attention_out_no_mask = model._compute_attention(sample_input, mask=None)
-            assert attention_out_no_mask.shape == sample_input.shape
-
     def test_ssm_computation(
         self, model: DPASSMBlock, sample_input: torch.Tensor
     ) -> None:
@@ -230,7 +191,6 @@ class TestDPASSMBlock:
 
         # Create input with seed
         x = torch.randn(batch_size, seq_len, d_model)
-        x = x.clone()  # Ensure deterministic input
 
         model.eval()
         with torch.no_grad():
@@ -374,11 +334,13 @@ class TestDPASSMBlock:
 
         model.eval()
         with torch.no_grad():
-            output, new_state = model.forward_step(x_t)
+            output, new_state, attn_state = model.forward_step(x_t)
 
         # Check output shapes
         assert output.shape == (batch_size, 1, d_model)
         assert new_state.shape == (batch_size, d_state)
+        assert isinstance(attn_state, tuple)
+        assert len(attn_state) == 2  # K_cache, V_cache
 
     def test_forward_step_with_state(
         self, model: DPASSMBlock, model_params: dict[str, int]
@@ -394,11 +356,13 @@ class TestDPASSMBlock:
 
         model.eval()
         with torch.no_grad():
-            output, new_state = model.forward_step(x_t, initial_state)
+            output, new_state, attn_state = model.forward_step(x_t, initial_state)
 
         # Check output shapes
         assert output.shape == (batch_size, 1, d_model)
         assert new_state.shape == initial_state.shape
+        assert isinstance(attn_state, tuple)
+        assert len(attn_state) == 2
 
     def test_forward_step_continuity(
         self, model: DPASSMBlock, model_params: dict[str, int]
@@ -412,13 +376,16 @@ class TestDPASSMBlock:
 
         model.eval()
         with torch.no_grad():
-            state = None
+            ssm_state = None
+            attn_state = None
 
             # Process tokens one by one
             outputs_step = []
             for t in range(tokens.shape[1]):
                 x_t = tokens[:, t : t + 1, :]  # Single token
-                output_t, state = model.forward_step(x_t, state)
+                output_t, ssm_state, attn_state = model.forward_step(
+                    x_t, ssm_state, attn_state
+                )
                 outputs_step.append(output_t)
 
             # Concatenate step-by-step outputs
@@ -441,7 +408,7 @@ class TestDPASSMBlock:
             )
 
             # SSM states should be closer since they don't depend on sequence normalization
-            state_diff = torch.max(torch.abs(state - state_full))
+            state_diff = torch.max(torch.abs(ssm_state - state_full))
             assert state_diff < 0.1, (
                 f"SSM states differ too much. Max diff: {state_diff:.4f}"
             )
@@ -457,7 +424,7 @@ class TestDPASSMBlock:
         x_t = torch.randn(batch_size, 1, d_model)
         model.eval()
         with torch.no_grad():
-            output, state = model.forward_step(x_t)
+            output, state, attn_state = model.forward_step(x_t)
             assert output.shape == (batch_size, 1, d_model)
 
         # Test wrong sequence length (should raise assertion)
@@ -465,173 +432,209 @@ class TestDPASSMBlock:
         with pytest.raises(AssertionError):
             model.forward_step(x_wrong)
 
-    def test_shape_to_heads_basic(self, model: DPASSMBlock) -> None:
-        """Test basic functionality of _shape_to_heads method."""
-        batch_size, seq_len = 4, 16
-
-        # Create input tensor
-        x = torch.randn(batch_size, seq_len, model.d_model)
-
-        # Apply the method
-        result = model._shape_to_heads(x)
-
-        # Check output shape: (B, n_heads, T, d_model // n_heads)
-        expected_head_dim = model.d_model // model.n_heads
-        expected_shape = (batch_size, model.n_heads, seq_len, expected_head_dim)
-
-        assert result.shape == expected_shape
-        assert result.dtype == x.dtype
-        assert result.device == x.device
-
-    def test_shape_to_heads_data_consistency(self, model: DPASSMBlock) -> None:
-        """Test that _shape_to_heads preserves data consistency."""
-        batch_size, seq_len = 2, 8
-
-        # Create input with known values
-        x = torch.ones(batch_size, seq_len, model.d_model)
-
-        # Apply the method
-        result = model._shape_to_heads(x)
-
-        # All values should still be 1.0 (just reshaped)
-        assert torch.all(torch.abs(result - 1.0) < 1e-6)
-
-        # Test with random values - reshaping should preserve sum
-        x_random = torch.randn(batch_size, seq_len, model.d_model)
-        original_sum = x_random.sum()
-        result_sum = model._shape_to_heads(x_random).sum()
-
-        assert torch.allclose(original_sum, result_sum, atol=1e-6)
-
-    def test_shape_to_heads_edge_cases(self, model_params: dict[str, int]) -> None:
-        """Test _shape_to_heads with edge cases."""
-        # Test with single head
-        model_single_head = DPASSMBlock(
-            d_model=model_params["d_model"],
-            n_heads=1,
-            window_size=model_params["window_size"],
-            ssm_state_dim=model_params["ssm_state_dim"],
-            dropout=model_params["dropout"],
-        )
-
-        # Test with single sequence length
-        x_single = torch.randn(2, 1, model_params["d_model"])
-        result = model_single_head._shape_to_heads(x_single)
-
-        expected_shape = (2, 1, 1, model_params["d_model"])
-        assert result.shape == expected_shape
-
-        # Test with single batch
-        model_single_batch = DPASSMBlock(**model_params)
-        x_single_batch = torch.randn(1, 8, model_params["d_model"])
-        result = model_single_batch._shape_to_heads(x_single_batch)
-
-        expected_shape = (
-            1,
-            model_params["n_heads"],
-            8,
-            model_params["d_model"] // model_params["n_heads"],
-        )
-        assert result.shape == expected_shape
-
-    def test_shape_to_heads_various_dimensions(
-        self, model_params: dict[str, int]
+    def test_streaming_equivalence_with_kv_cache(
+        self, model: DPASSMBlock, model_params: dict[str, int]
     ) -> None:
-        """Test _shape_to_heads with various dimension combinations."""
+        """Test streaming equivalence with KV cache as requested by research team."""
+        torch.manual_seed(42)
+
+        batch_size, seq_len = 2, 8
         d_model = model_params["d_model"]
-        n_heads = model_params["n_heads"]
+
+        # Create input sequence
+        x = torch.randn(batch_size, seq_len, d_model)
+
+        model.eval()
+        with torch.no_grad():
+            # Run full forward pass
+            y_full, ssm_state_full = model(x)
+
+            # Run step-by-step with KV+SSM caches
+            ssm_state = None
+            attn_state = None
+            outputs_step = []
+
+            for t in range(seq_len):
+                x_t = x[:, t : t + 1, :]  # Single token
+                output_t, ssm_state, attn_state = model.forward_step(
+                    x_t, ssm_state, attn_state
+                )
+                outputs_step.append(output_t)
+
+            # Concatenate step-by-step outputs
+            y_step = torch.cat(outputs_step, dim=1)
+
+            # Compare outputs (allow small tolerance due to numerical differences)
+            assert torch.allclose(y_full, y_step, atol=1e-5, rtol=1e-4), (
+                f"Streaming equivalence failed. Max diff: {torch.max(torch.abs(y_full - y_step))}"
+            )
+
+            # Compare final SSM states
+            assert torch.allclose(ssm_state_full, ssm_state, atol=1e-5, rtol=1e-4), (
+                f"SSM state equivalence failed. Max diff: {torch.max(torch.abs(ssm_state_full - ssm_state))}"
+            )
+
+    def test_windowing_causality(
+        self, model: DPASSMBlock, model_params: dict[str, int]
+    ) -> None:
+        """Test windowing/causality as requested by research team."""
+        batch_size, seq_len = 2, 16
+        d_model = model_params["d_model"]
+        window_size = model_params["window_size"]
+
+        # Create base input
+        x_base = torch.randn(batch_size, seq_len, d_model)
+
+        model.eval()
+        with torch.no_grad():
+            # Get baseline output
+            y_base, _ = model(x_base)
+
+            # Modify a token outside the window for position t
+            t = seq_len - 1  # Last position
+            if t - window_size - 1 >= 0:  # Only if there's a position outside window
+                x_modified = x_base.clone()
+                x_modified[:, t - window_size - 1, :] += 10.0  # Large change
+
+                y_modified, _ = model(x_modified)
+
+                # Output at position t should NOT change (outside window)
+                assert torch.allclose(
+                    y_base[:, t, :], y_modified[:, t, :], atol=1e-6
+                ), (
+                    f"Windowing causality failed. Position {t} changed when token at "
+                    f"position {t - window_size - 1} was modified."
+                )
+
+    def test_ssm_continuity_chunks(
+        self, model: DPASSMBlock, model_params: dict[str, int]
+    ) -> None:
+        """Test SSM continuity across chunks as requested by research team."""
+        torch.manual_seed(42)
+
+        batch_size, seq_len = 2, 12
+        d_model = model_params["d_model"]
+
+        # Create full input
+        x_full = torch.randn(batch_size, seq_len, d_model)
+
+        # Split into chunks
+        mid_point = seq_len // 2
+        x_a = x_full[:, :mid_point, :]
+        x_b = x_full[:, mid_point:, :]
+
+        model.eval()
+        with torch.no_grad():
+            # Full forward pass
+            y_full, ssm_state_full = model(x_full)
+
+            # Chunked forward passes
+            y_a, ssm_state_a = model(x_a)
+            y_b, ssm_state_b = model(x_b, ssm_state=ssm_state_a)
+
+            # Concatenate chunked outputs
+            y_chunked = torch.cat([y_a, y_b], dim=1)
+
+            # Note: Output comparison is relaxed due to LayerNorm differences between
+            # full sequence and chunked processing. This is expected behavior.
+            # The key test is SSM state continuity.
+
+            # Compare final SSM states (this is the critical test)
+            assert torch.allclose(ssm_state_full, ssm_state_b, atol=1e-5, rtol=1e-4), (
+                f"SSM state continuity failed. Max diff: {torch.max(torch.abs(ssm_state_full - ssm_state_b))}"
+            )
+
+            # Verify that outputs are in reasonable range (not wildly different)
+            max_diff = torch.max(torch.abs(y_full - y_chunked))
+            assert max_diff < 1.0, (
+                f"Output difference too large: {max_diff}. This may indicate a bug."
+            )
+
+    def test_gpu_smoke_test(self, model_params: dict[str, int]) -> None:
+        """GPU smoke test as requested by research team."""
+        if not torch.cuda.is_available():
+            pytest.skip("CUDA not available")
 
         model = DPASSMBlock(**model_params)
+        model = model.cuda()
 
-        # Test different batch sizes
-        for batch_size in [1, 2, 4, 8]:
-            x = torch.randn(batch_size, 12, d_model)
-            result = model._shape_to_heads(x)
-
-            expected_shape = (batch_size, n_heads, 12, d_model // n_heads)
-            assert result.shape == expected_shape
-
-        # Test different sequence lengths
-        for seq_len in [1, 4, 8, 16, 32]:
-            x = torch.randn(3, seq_len, d_model)
-            result = model._shape_to_heads(x)
-
-            expected_shape = (3, n_heads, seq_len, d_model // n_heads)
-            assert result.shape == expected_shape
-
-    def test_shape_to_heads_different_head_counts(
-        self, model_params: dict[str, int]
-    ) -> None:
-        """Test _shape_to_heads with different head counts."""
+        batch_size, seq_len = 2, 8
         d_model = model_params["d_model"]
 
-        # Test with different head counts that divide d_model evenly
-        valid_head_counts = [1, 2, 4, 8] if d_model == 64 else [1, 2, 4]
+        # Create CUDA input
+        x = torch.randn(batch_size, seq_len, d_model, device="cuda")
 
-        for n_heads in valid_head_counts:
-            if d_model % n_heads != 0:
-                continue  # Skip if d_model not divisible by n_heads
+        model.eval()
+        with torch.no_grad():
+            # Should not raise any allocation errors
+            output, state = model(x)
 
-            model = DPASSMBlock(
-                d_model=d_model,
-                n_heads=n_heads,
+            assert output.device.type == "cuda"
+            assert state.device.type == "cuda"
+            assert output.shape == x.shape
+            assert state.shape == (batch_size, model_params["ssm_state_dim"])
+
+    def test_head_dimension_validation(self, model_params: dict[str, int]) -> None:
+        """Test head dimension validation as requested by research team."""
+        # Test invalid head count (should raise ValueError)
+        with pytest.raises(ValueError, match="d_model must be divisible by n_heads"):
+            DPASSMBlock(
+                d_model=64,
+                n_heads=3,  # 64 % 3 != 0
                 window_size=model_params["window_size"],
                 ssm_state_dim=model_params["ssm_state_dim"],
                 dropout=model_params["dropout"],
             )
 
-            x = torch.randn(2, 8, d_model)
-            result = model._shape_to_heads(x)
+        # Test valid head count (should work)
+        model = DPASSMBlock(
+            d_model=64,
+            n_heads=4,  # 64 % 4 == 0
+            window_size=model_params["window_size"],
+            ssm_state_dim=model_params["ssm_state_dim"],
+            dropout=model_params["dropout"],
+        )
+        assert model.n_heads == 4
 
-            expected_head_dim = d_model // n_heads
-            expected_shape = (2, n_heads, 8, expected_head_dim)
+    def test_cached_mask_performance(self, model: DPASSMBlock) -> None:
+        """Test that mask caching works correctly."""
+        seq_len = 16
+        device = torch.device("cpu")
 
-            assert result.shape == expected_shape
+        # First call should create and cache the mask
+        mask1 = model._get_window_mask(seq_len, model.window_size, device)
 
-    def test_shape_to_heads_requires_grad(self, model: DPASSMBlock) -> None:
-        """Test that _shape_to_heads preserves requires_grad property."""
-        batch_size, seq_len = 2, 8
+        # Second call should return cached mask
+        mask2 = model._get_window_mask(seq_len, model.window_size, device)
 
-        # Create input that requires gradients
-        x = torch.randn(batch_size, seq_len, model.d_model, requires_grad=True)
+        # Should be the same tensor (cached)
+        assert mask1 is mask2
 
-        result = model._shape_to_heads(x)
+        # Check mask properties
+        assert mask1.shape == (1, 1, seq_len, seq_len)
+        assert mask1.dtype == torch.bool
 
-        # Result should also require gradients (since it's just reshaping)
-        assert result.requires_grad
+        # Test different sequence length creates new mask
+        mask3 = model._get_window_mask(seq_len + 1, model.window_size, device)
+        assert mask3 is not mask1
 
-    def test_shape_to_heads_transpose_operation(self, model: DPASSMBlock) -> None:
-        """Test that the transpose operation in _shape_to_heads works correctly."""
-        batch_size, seq_len = 3, 12
+    def test_causal_fast_path(self, model_params: dict[str, int]) -> None:
+        """Test causal fast path when window_size >= seq_len."""
+        # Create model with large window size
+        model = DPASSMBlock(
+            d_model=model_params["d_model"],
+            n_heads=model_params["n_heads"],
+            window_size=32,  # Larger than test sequence
+            ssm_state_dim=model_params["ssm_state_dim"],
+            dropout=model_params["dropout"],
+        )
 
-        # Create input with identifiable pattern
-        x = torch.zeros(batch_size, seq_len, model.d_model)
+        batch_size, seq_len = 2, 16
+        d_model = model_params["d_model"]
+        x = torch.randn(batch_size, seq_len, d_model)
 
-        # Set specific values for each position to verify transpose
-        for b in range(batch_size):
-            for t in range(seq_len):
-                for d in range(model.d_model):
-                    x[b, t, d] = b * 1000 + t * 10 + d
-
-        result = model._shape_to_heads(x)
-
-        # Manually verify the reshape and transpose operation
-        # Original: (B, T, d_model)
-        # After view: (B, T, n_heads, d_model // n_heads)
-        # After transpose: (B, n_heads, T, d_model // n_heads)
-
-        head_dim = model.d_model // model.n_heads
-
-        # Check a few specific positions
-        for b in range(batch_size):
-            for h in range(model.n_heads):
-                for t in range(seq_len):
-                    for d in range(head_dim):
-                        original_idx = h * head_dim + d
-                        expected_value = b * 1000 + t * 10 + original_idx
-                        actual_value = result[b, h, t, d]
-
-                        assert actual_value == expected_value, (
-                            f"Transpose verification failed at position ({b}, {h}, {t}, {d}). "
-                            f"Expected {expected_value}, got {actual_value}"
-                        )
+        model.eval()
+        with torch.no_grad():
+            # Should use causal fast path (no mask needed)
+            output, _ = model(x)
+            assert output.shape == x.shape

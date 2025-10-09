@@ -92,7 +92,7 @@ def main() -> None:
     print("=" * 60)
     print("# Basic training")
     print("python efficient_longctx/training/train.py fit \\")
-    print("    --model.params=150m \\")
+    print("    --model.num_params=150m \\")
     print("    --model.block=dpassm \\")
     print("    --data.dataset=openwebtext \\")
     print("    --data.max_tokens=100000 \\")

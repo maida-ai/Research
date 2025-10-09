@@ -66,17 +66,13 @@ class TestDPASSMSDPA:
 
     def test_mask_conversion_correctness(self, model: DPASSMBlock) -> None:
         """
-        Test that additive masks are correctly converted to boolean masks.
+        Test that boolean masks are correctly generated for SDPA.
 
-        The mask conversion is critical: additive masks with -inf/0 must be
-        converted to boolean masks with True/False for SDPA.
+        The mask generation is critical: boolean masks with True/False must be
+        correctly generated for SDPA.
         """
-        seq_len = 8
-        device = torch.device("cpu")
-        dtype = torch.float32
-
-        # Build windowed causal mask (additive format)
-        mask = model._build_window_mask(seq_len, model.window_size, device, dtype)
+        # Use a sequence longer than window size to ensure mask is used
+        seq_len = 16  # Longer than window_size=8
 
         # Create dummy input
         B = 1
@@ -91,7 +87,7 @@ class TestDPASSMSDPA:
 
             model.eval()
             with torch.no_grad():
-                _ = model._compute_attention(x, mask=mask)
+                _ = model._compute_attention(x)
 
             # Get the actual call arguments
             call_args = mock_sdpa.call_args
@@ -99,22 +95,20 @@ class TestDPASSMSDPA:
             # Extract attn_mask from kwargs
             attn_mask = call_args.kwargs.get("attn_mask")
 
-            # Verify mask was converted
-            assert attn_mask is not None, "Mask should be passed to SDPA"
+            # Verify mask was passed (since seq_len > window_size)
+            assert attn_mask is not None, (
+                "Mask should be passed to SDPA when seq_len > window_size"
+            )
             assert attn_mask.dtype == torch.bool, "Mask should be boolean type"
 
-            # Verify mask conversion logic:
-            # Original mask: -inf for blocked, 0 for allowed
+            # Verify mask properties
             # Boolean mask: True for allowed, False for blocked
             # Check a few positions
             for i in range(min(4, seq_len)):
                 for j in range(i + 1, min(i + 4, seq_len)):
                     # j > i should be blocked (causal)
-                    original_blocked = mask[i, j] == float("-inf")
-                    bool_blocked = not attn_mask[i, j].item()
-                    assert original_blocked == bool_blocked, (
-                        f"Mask conversion failed at [{i},{j}]"
-                    )
+                    bool_blocked = not attn_mask[0, 0, i, j].item()
+                    assert bool_blocked, f"Causal mask failed at [{i},{j}]"
 
     def test_dropout_behavior_train_vs_eval(
         self, model: DPASSMBlock, sample_input: torch.Tensor
@@ -171,7 +165,7 @@ class TestDPASSMSDPA:
 
             model.eval()
             with torch.no_grad():
-                _ = model._compute_attention(x, mask=None)
+                _ = model._compute_attention(x)
 
             # Verify SDPA was called with None mask
             call_kwargs = mock_sdpa.call_args.kwargs
@@ -191,7 +185,7 @@ class TestDPASSMSDPA:
 
             model.eval()
             with torch.no_grad():
-                _, _ = model.forward_step(x_t)
+                _, _, _ = model.forward_step(x_t)
 
             # Verify SDPA was called
             assert mock_sdpa.called, "forward_step should use SDPA"
@@ -203,15 +197,12 @@ class TestDPASSMSDPA:
         Performs a sanity check that the attention mechanism produces
         reasonable outputs (no NaNs, correct shapes, bounded values).
         """
-        B, T, d = 2, 16, model.d_model
-        x = torch.randn(B, T, d)
-
-        # Build mask
-        mask = model._build_window_mask(T, model.window_size, x.device, x.dtype)
+        B, T = 2, 16
+        x = torch.randn(B, T, model.d_model)
 
         model.eval()
         with torch.no_grad():
-            output = model._compute_attention(x, mask=mask)
+            output = model._compute_attention(x)
 
         # Check output properties
         assert output.shape == x.shape, "Output shape should match input"
@@ -225,14 +216,13 @@ class TestDPASSMSDPA:
 
     def test_deterministic_attention_in_eval(self, model: DPASSMBlock) -> None:
         """Test that attention is deterministic in eval mode."""
-        B, T, d = 2, 16, model.d_model
-        x = torch.randn(B, T, d)
-        mask = model._build_window_mask(T, model.window_size, x.device, x.dtype)
+        B, T = 2, 16
+        x = torch.randn(B, T, model.d_model)
 
         model.eval()
         with torch.no_grad():
-            output1 = model._compute_attention(x, mask=mask)
-            output2 = model._compute_attention(x, mask=mask)
+            output1 = model._compute_attention(x)
+            output2 = model._compute_attention(x)
 
         # Outputs should be identical in eval mode
         assert torch.allclose(output1, output2, atol=1e-6), (
@@ -269,11 +259,10 @@ class TestDPASSMSDPA:
 
         B, T = 2, 16
         x = torch.randn(B, T, model.d_model, device="cuda")
-        mask = model._build_window_mask(T, model.window_size, x.device, x.dtype)
 
         model.eval()
         with torch.no_grad():
-            output = model._compute_attention(x, mask=mask)
+            output = model._compute_attention(x)
 
         assert output.device.type == "cuda"
         assert output.shape == x.shape
@@ -281,12 +270,11 @@ class TestDPASSMSDPA:
 
     def test_gradient_flow_through_sdpa(self, model: DPASSMBlock) -> None:
         """Test that gradients flow correctly through SDPA attention."""
-        B, T, d = 2, 16, model.d_model
-        x = torch.randn(B, T, d, requires_grad=True)
-        mask = model._build_window_mask(T, model.window_size, x.device, x.dtype)
+        B, T = 2, 16
+        x = torch.randn(B, T, model.d_model, requires_grad=True)
 
         model.train()
-        output = model._compute_attention(x, mask=mask)
+        output = model._compute_attention(x)
 
         # Backward pass
         loss = output.sum()
@@ -314,8 +302,7 @@ class TestDPASSMSDPA:
             x[0, t, 0] = float(t)  # Position marker
 
         with torch.no_grad():
-            mask = model._build_window_mask(T, model.window_size, x.device, x.dtype)
-            output = model._compute_attention(x, mask=mask)
+            output = model._compute_attention(x)
 
         # The output at each position should only be influenced by tokens
         # within the window. This is hard to test precisely without knowing
@@ -325,28 +312,25 @@ class TestDPASSMSDPA:
 
     def test_batch_size_consistency(self, model: DPASSMBlock) -> None:
         """Test that SDPA attention handles different batch sizes correctly."""
-        T, d = 16, model.d_model
-        mask = model._build_window_mask(
-            T, model.window_size, torch.device("cpu"), torch.float32
-        )
+        T = 16
 
         model.eval()
         with torch.no_grad():
             for B in [1, 2, 4, 8]:
-                x = torch.randn(B, T, d)
-                output = model._compute_attention(x, mask=mask)
+                x = torch.randn(B, T, model.d_model)
+                output = model._compute_attention(x)
 
-                assert output.shape == (B, T, d)
+                assert output.shape == (B, T, model.d_model)
                 assert not torch.isnan(output).any()
 
     def test_edge_case_single_token(self, model: DPASSMBlock) -> None:
         """Test SDPA attention with single token (T=1)."""
-        B, T, d = 2, 1, model.d_model
-        x = torch.randn(B, T, d)
+        B, T = 2, 1
+        x = torch.randn(B, T, model.d_model)
 
         model.eval()
         with torch.no_grad():
-            output = model._compute_attention(x, mask=None)
+            output = model._compute_attention(x)
 
         assert output.shape == x.shape
         assert not torch.isnan(output).any()
@@ -358,13 +342,12 @@ class TestDPASSMSDPA:
             d_model=64, n_heads=4, window_size=128, ssm_state_dim=16, dropout=0.1
         )
 
-        B, T, d = 2, 32, model.d_model  # T < window_size
-        x = torch.randn(B, T, d)
+        B, T = 2, 32  # T < window_size
+        x = torch.randn(B, T, model.d_model)
 
         model.eval()
         with torch.no_grad():
-            mask = model._build_window_mask(T, model.window_size, x.device, x.dtype)
-            output = model._compute_attention(x, mask=mask)
+            output = model._compute_attention(x)
 
         assert output.shape == x.shape
         assert not torch.isnan(output).any()

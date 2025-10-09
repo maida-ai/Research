@@ -1,7 +1,7 @@
 # 1) Long-term = State space, Short-term = Transformer
 
 **Why this makes sense:**
-Modern SSMs (e.g., **Mamba** selective SSMs; **RetNet**’s retention) give linear-time sequence modeling with strong long-range behavior, but they’re weaker at precise, content-based lookup that attention excels at. A **hybrid block** that routes recent tokens through attention and distant context through a recurrent SSM channel matches the empirical sweet spot: attention for local, token-precise reasoning; SSM for stable, compressive memory over long horizons. ([arXiv][1])
+Modern SSMs (e.g., **Mamba** selective SSMs; **RetNet**'s retention) give linear-time sequence modeling with strong long-range behavior, but they're weaker at precise, content-based lookup that attention excels at. A **hybrid block** that routes recent tokens through attention and distant context through a recurrent SSM channel matches the empirical sweet spot: attention for local, token-precise reasoning; SSM for stable, compressive memory over long horizons. ([arXiv][1])
 
 **How to instantiate (block-level design):**
 
@@ -9,11 +9,11 @@ Modern SSMs (e.g., **Mamba** selective SSMs; **RetNet**’s retention) give line
 
   * **Local path (attention):** masked local attention over the most recent (W) tokens (FlashAttention for efficiency during training).
   * **Global path (SSM):** a recurrent SSM state (\mathbf{s}_t) updated per token chunk; outputs a low-frequency summary.
-  * **Fusion:** gated mixing (learned gate or FiLM) of attention output and SSM output; optionally cross-attend queries to the SSM state (1–4 “global tokens” to probe the state). This echoes **Infini-attention**’s “local exact + long-range cheap” idea but replaces linear attention/compressive memory with an SSM state. ([arXiv][2])
+  * **Fusion:** gated mixing (learned gate or FiLM) of attention output and SSM output; optionally cross-attend queries to the SSM state (1–4 “global tokens” to probe the state). This echoes **Infini-attention**'s “local exact + long-range cheap” idea but replaces linear attention/compressive memory with an SSM state. ([arXiv][2])
 * **Training losses for stability:**
 
-  * **Predictive auxiliary on the SSM stream** (as in **Compressive Transformer**’s reconstruction loss) to keep the “blur” predictive rather than degenerately smooth.
-  * Optional **state distillation** where attention’s summary is matched by the SSM head. ([arXiv][3])
+  * **Predictive auxiliary on the SSM stream** (as in **Compressive Transformer**'s reconstruction loss) to keep the “blur” predictive rather than degenerately smooth.
+  * Optional **state distillation** where attention's summary is matched by the SSM head. ([arXiv][3])
 * **Routing policy:**
 
   * Route *all* tokens through both paths, but **backprop scale** or **gates** bias recent tokens to attention and older ones to SSM. This avoids hard switches and lets the model learn usage.
@@ -22,7 +22,7 @@ Modern SSMs (e.g., **Mamba** selective SSMs; **RetNet**’s retention) give line
   * Keep a few **global tokens** (as in **BigBird/Longformer** families) or add a small **latent bottleneck** (Perceiver-style) to support verbatim recall when needed—important for code/math. ([arXiv][4])
 
 **Why not “SSM only”?**
-Even strong SSMs like **Mamba** still trail attention for discrete, content-addressed reasoning without selectivity tricks; your split lets each mechanism do what it’s best at. ([arXiv][5])
+Even strong SSMs like **Mamba** still trail attention for discrete, content-addressed reasoning without selectivity tricks; your split lets each mechanism do what it's best at. ([arXiv][5])
 
 **Engineering notes:**
 
@@ -31,13 +31,13 @@ Even strong SSMs like **Mamba** still trail attention for discrete, content-addr
 
 # 2) Block-local attention with a **per-block state vector**
 
-Your idea—each block maintains its own recurrent state—is very close to **chunkwise recurrent** forms of RetNet and hybrid RNN/Transformer work (e.g., **RWKV**-inspired hybrids). It’s also compatible with hierarchical attention like **H-Transformer-1D** if you want multiscale summaries. ([arXiv][4])
+Your idea—each block maintains its own recurrent state—is very close to **chunkwise recurrent** forms of RetNet and hybrid RNN/Transformer work (e.g., **RWKV**-inspired hybrids). It's also compatible with hierarchical attention like **H-Transformer-1D** if you want multiscale summaries. ([arXiv][4])
 
 **Concrete design:**
 
 * **Partition** a length-(L) sequence into (k) chunks of length (L/k).
 * Within chunk (i), run **exact local attention** (fast with FlashAttention), and **update a learned state** (\mathbf{h}^{(\ell)}_i) for each layer (\ell).
-* When you move to chunk (i{+}1), **initialize** that chunk’s processing with (\mathbf{h}^{(\ell)}_i) (skip or low-rank cross-attend to it). This is akin to “carryover” memory in chunkwise RetNet and Transformer-XL-like recurrence, but cheaper than carrying full KVs. ([arXiv][4])
+* When you move to chunk (i{+}1), **initialize** that chunk's processing with (\mathbf{h}^{(\ell)}_i) (skip or low-rank cross-attend to it). This is akin to “carryover” memory in chunkwise RetNet and Transformer-XL-like recurrence, but cheaper than carrying full KVs. ([arXiv][4])
 * **Cross-chunk mixing:**
 
   * To avoid “information islands,” add **(a)** periodic *shifted chunking*, **(b)** a tiny number of **global tokens**, or **(c)** a small **latent array** that each chunk cross-attends to (Perceiver IO pattern). These give you the (O(L^2/k)) win without losing global coherence. ([arXiv][4])
@@ -56,7 +56,7 @@ You replace the fragile “hope information hops across windows” dynamic with 
 
   * Use **gated updates** (selective SSMs in **Mamba**); add **periodic normalization or resets** on chunk boundaries; and monitor long-horizon validation where drift shows up first. ([arXiv][1])
 * **Exact quoting / code fidelity:** Add **global tokens** or a **tiny retrieval memory** (kNN/associative) for rare verbatim needs; keep evaluations that test quote-back and cross-file code references. (Related findings across BigBird/Perceiver/RWKV literatures.) ([arXiv][4])
-* **Integration debt:** Make the SSM path **parallelizable during training** (RetNet’s parallel form; Mamba’s hardware-aware parallel algorithm), so you don’t pay RNN-like slowdowns. ([arXiv][4])
+* **Integration debt:** Make the SSM path **parallelizable during training** (RetNet's parallel form; Mamba's hardware-aware parallel algorithm), so you don't pay RNN-like slowdowns. ([arXiv][4])
 * **Over-compressing hurts quality:** Evidence from **Infini-attention** and follow-ups suggests too-aggressive compression degrades performance; let your SSM capacity scale modestly with model size and keep a short exact-attention window. ([Hugging Face][7])
 
 ## Suggested ablations (to make the paper compelling)

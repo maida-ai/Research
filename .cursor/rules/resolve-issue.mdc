@@ -31,7 +31,7 @@ Resolve a single tracked issue by producing a minimal, safe code change and a re
 
 2. **Plan**
    - Draft a concise plan (≤5 bullets) explaining the minimal approach and files to touch.
-   - List any trade-offs, risks, and test cases you’ll add/update.
+   - List any trade-offs, risks, and test cases you'll add/update.
 
 3. **Implement**
    - Make only the changes from the plan.

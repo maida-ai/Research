@@ -57,14 +57,14 @@ def demonstrate_model_factory():
     print("\n=== Model Factory Examples ===")
 
     # Create different sized models using the factory
-    for params in ["150m", "250m", "350m"]:
+    for num_params in ["150m", "250m", "350m"]:
         model = create_model(
             vocab_size=1000,
-            params=params,
+            num_params=num_params,
             block_type="vanilla",
             block_kwargs={},
         )
-        print(f"{params} model: {model.get_num_params():,} parameters")
+        print(f"{num_params} model: {model.get_num_params():,} parameters")
 
 
 def demonstrate_forward_pass():
@@ -96,7 +96,7 @@ def demonstrate_model_config():
 
     model = create_model(
         vocab_size=1000,
-        params="150m",
+        num_params="150m",
         block_type="dpassm",
         block_kwargs={"window_size": 32, "ssm_state_dim": 64},
     )

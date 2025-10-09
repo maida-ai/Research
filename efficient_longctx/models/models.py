@@ -39,7 +39,13 @@ def get_config_params(num_params: int | str | None = None) -> dict[str, Any]:
 class VanillaAttentionBlock(nn.Module):
     """Simple causal attention block for baseline comparison."""
 
-    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1, **kwargs):
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        dropout: float = 0.1,
+        **kwargs: Any,
+    ):
         super().__init__()
         self.d_model = d_model
         self.n_heads = n_heads
@@ -61,7 +67,7 @@ class VanillaAttentionBlock(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
         """Forward pass with causal attention."""
         B, T, D = x.shape
 
@@ -99,7 +105,7 @@ class LongCtxModel(nn.Module):
         d_model: Model dimension
         n_layers: Number of transformer layers
         n_heads: Number of attention heads
-        block_type: Type of attention block ('dpassm', 'blade', 'vanilla')
+        block_type: Type of attention block ('dpassm', 'blade', 'vanilla', 'baseline_longformer', 'baseline_bigbird')
         block_kwargs: Additional arguments for the attention block
         dropout: Dropout probability
         max_seq_len: Maximum sequence length
@@ -162,7 +168,9 @@ class LongCtxModel(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, input_ids: torch.Tensor, *args: Any, **kwargs: Any
+    ) -> torch.Tensor:
         """Forward pass through the model.
 
         Args:
@@ -184,7 +192,12 @@ class LongCtxModel(nn.Module):
         # Pass through transformer layers
         state = None
         for layer in self.layers:
-            if self.block_type in ["dpassm", "blade"]:
+            if self.block_type in [
+                "dpassm",
+                "blade",
+                "baseline_longformer",
+                "baseline_bigbird",
+            ]:
                 x, state = layer(x, state)
             else:
                 x = layer(x)
@@ -219,6 +232,8 @@ def get_layer(block_type: str | None = None) -> nn.Module:
         "dpassm": efficient_longctx.blocks.DPASSMBlock,
         "blade": efficient_longctx.blocks.BLADEBlock,
         "vanilla": VanillaAttentionBlock,
+        "baseline_longformer": efficient_longctx.blocks.LongformerBlock,
+        "baseline_bigbird": efficient_longctx.blocks.BigBirdBlock,
     }
 
     if block_type is None:
@@ -233,15 +248,16 @@ def get_layer(block_type: str | None = None) -> nn.Module:
 def create_model(
     *,  # Force keyword-only arguments
     vocab_size: int,
-    params: str,
+    num_params: int | str,
     block_type: str,
     block_kwargs: dict[str, Any],
+    **kwargs,  # All other args will be passed to the mdoel directly
 ) -> LongCtxModel:
     """Create a model with specified parameter count.
 
     Args:
         vocab_size: Vocabulary size
-        params: Parameter count ('150m', '250m', '350m')
+        num_params: Parameter count ('150m', '250m', '350m')
         block_type: Type of attention block
         block_kwargs: Additional arguments for the attention block
 
@@ -249,7 +265,8 @@ def create_model(
         Configured model
     """
     # Model configurations for different parameter counts
-    config = get_config_params(params)
+    config = get_config_params(num_params)
+    config.update(kwargs)  # Override with kwargs
 
     model = LongCtxModel(
         vocab_size=vocab_size,
@@ -258,6 +275,7 @@ def create_model(
         n_heads=config["n_heads"],
         block_type=block_type,
         block_kwargs=block_kwargs,
+        **kwargs,
     )
 
     return model
@@ -295,12 +313,14 @@ class LongCtxLightningModule(LightningModule):
         self,
         *,  # Force keyword-only arguments
         # Model configuration
-        params: str = "150m",
+        num_params: int | str = "150m",
         block: str = "dpassm",
         window_size: int = 2048,
         ssm_state_dim: int = 256,
         chunk_size: int = 512,
         state_dim: int = 128,
+        n_global_tokens: int = 2,
+        n_random_tokens: int = 4,
         # Training configuration
         learning_rate: float = 3e-4,
         weight_decay: float = 0.01,
@@ -312,12 +332,14 @@ class LongCtxLightningModule(LightningModule):
         """Initialize Lightning module.
 
         Args:
-            params: Model size ('150m', '250m', '350m')
-            block: Attention block type ('dpassm', 'blade', 'vanilla')
-            window_size: Window size for DP-ASSM
+            num_params: Model size ('150m', '250m', '350m')
+            block: Attention block type ('dpassm', 'blade', 'vanilla', 'baseline_longformer', 'baseline_bigbird')
+            window_size: Window size for DP-ASSM and baseline blocks
             ssm_state_dim: SSM state dimension for DP-ASSM
             chunk_size: Chunk size for BLADE
             state_dim: State dimension for BLADE
+            n_global_tokens: Number of global tokens for baseline blocks
+            n_random_tokens: Number of random tokens for BigBird
             learning_rate: Learning rate for optimizer
             weight_decay: Weight decay for optimizer
             warmup_steps: Number of warmup steps for scheduler
@@ -332,12 +354,14 @@ class LongCtxLightningModule(LightningModule):
         self.save_hyperparameters()
 
         # Store configuration
-        self.params = params
+        self.num_params = num_params
         self.block = block
         self.window_size = window_size
         self.ssm_state_dim = ssm_state_dim
         self.chunk_size = chunk_size
         self.state_dim = state_dim
+        self.n_global_tokens = n_global_tokens
+        self.n_random_tokens = n_random_tokens
         self.learning_rate = learning_rate
         self.weight_decay = weight_decay
         self.warmup_steps = warmup_steps
@@ -381,21 +405,34 @@ class LongCtxLightningModule(LightningModule):
                     "chunk_size": self.chunk_size,
                     "state_dim": self.state_dim,
                 }
+            elif self.block == "baseline_longformer":
+                block_kwargs = {
+                    "window_size": self.window_size,
+                    "n_global_tokens": self.n_global_tokens,
+                }
+            elif self.block == "baseline_bigbird":
+                block_kwargs = {
+                    "window_size": self.window_size,
+                    "n_random_tokens": self.n_random_tokens,
+                    "n_global_tokens": self.n_global_tokens,
+                }
             else:  # vanilla
                 block_kwargs = {}
 
             # Create model
             self.model = create_model(
                 vocab_size=vocab_size,
-                params=self.params,
+                num_params=self.num_params,
                 block_type=self.block,
                 block_kwargs=block_kwargs,
             )
             logging.info(
-                f"Created {self.params} model with {self.model.get_num_params():,} parameters"
+                f"Created {self.num_params} model with {self.model.get_num_params():,} parameters"
             )
 
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, input_ids: torch.Tensor, *args: Any, **kwargs: Any
+    ) -> torch.Tensor:
         """Forward pass through the model.
 
         Args:
@@ -411,10 +448,14 @@ class LongCtxLightningModule(LightningModule):
             raise RuntimeError(
                 "Model not initialized. Make sure setup() was called or model was provided in __init__"
             )
-        return self.model(input_ids)
+        return self.model(input_ids, *args, **kwargs)
 
     def training_step(
-        self, batch: tuple[torch.Tensor, torch.Tensor], batch_idx: int
+        self,
+        batch: tuple[torch.Tensor, torch.Tensor],
+        batch_idx: int,
+        *args: Any,
+        **kwargs: Any,
     ) -> torch.Tensor:
         """Training step.
 
@@ -428,7 +469,7 @@ class LongCtxLightningModule(LightningModule):
         input_ids, labels = batch
 
         # Forward pass
-        logits = self(input_ids)
+        logits = self(input_ids, *args, **kwargs)
 
         # Calculate loss
         loss = F.cross_entropy(
@@ -448,7 +489,11 @@ class LongCtxLightningModule(LightningModule):
         return loss
 
     def validation_step(
-        self, batch: tuple[torch.Tensor, torch.Tensor], batch_idx: int
+        self,
+        batch: tuple[torch.Tensor, torch.Tensor],
+        batch_idx: int,
+        *args: Any,
+        **kwargs: Any,
     ) -> torch.Tensor:
         """Validation step.
 
@@ -462,7 +507,7 @@ class LongCtxLightningModule(LightningModule):
         input_ids, labels = batch
 
         # Forward pass
-        logits = self(input_ids)
+        logits = self(input_ids, *args, **kwargs)
 
         # Calculate loss
         loss = F.cross_entropy(

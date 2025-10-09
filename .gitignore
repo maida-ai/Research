@@ -1,6 +1,7 @@
 # Reports -- for now we can ignore reporting
 reports/
 artifacts/
+lightning_logs/
 
 # Environment
 .venv/

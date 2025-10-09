@@ -98,7 +98,7 @@ The new Lightning-based trainer provides:
 ```bash
 # Train a small model for testing
 uv run python examples/lightning_training_example.py \
-    --params 150m \
+    --num_params 150m \
     --block vanilla \
     --max_tokens 100000 \
     --batch_size 4 \
@@ -110,7 +110,7 @@ uv run python examples/lightning_training_example.py \
 ```bash
 # Train with DP-ASSM block using LightningCLI
 uv run python efficient_longctx/training/train.py fit \
-    --model.params=150m \
+    --model.num_params=150m \
     --model.block=dpassm \
     --model.window_size=2048 \
     --model.ssm_state_dim=256 \
@@ -134,7 +134,7 @@ The LightningCLI-based trainer provides even more advanced features:
 ```bash
 # Basic training with LightningCLI
 uv run python efficient_longctx/training/train.py fit \
-    --model.params=150m \
+    --model.num_params=150m \
     --model.block=dpassm \
     --data.dataset_name=openwebtext \
     --data.max_tokens=100000 \
