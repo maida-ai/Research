@@ -3,6 +3,7 @@
 import itertools
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -582,7 +583,9 @@ class TestLongCtxLightningModule:
         labels = torch.randint(0, 1000, (2, 10))
         batch = (input_ids, labels)
 
-        loss = module.training_step(batch, 0)
+        # Run training step without logging to avoid warnings
+        with patch.object(module, "log"):
+            loss = module.training_step(batch, 0)
         assert isinstance(loss, torch.Tensor)
         assert loss.requires_grad
 
@@ -605,7 +608,9 @@ class TestLongCtxLightningModule:
         labels = torch.randint(0, 1000, (2, 10))
         batch = (input_ids, labels)
 
-        loss = module.validation_step(batch, 0)
+        # Run validation step without logging to avoid warnings
+        with patch.object(module, "log"):
+            loss = module.validation_step(batch, 0)
         assert isinstance(loss, torch.Tensor)
 
     @pytest.mark.integration
@@ -628,11 +633,13 @@ class TestLongCtxLightningModule:
         batch = (input_ids, labels)
 
         # Test training step (uses math.exp for perplexity calculation)
-        loss = module.training_step(batch, 0)
+        with patch.object(module, "log"):
+            loss = module.training_step(batch, 0)
         assert isinstance(loss, torch.Tensor)
 
         # Test validation step (uses math.exp for perplexity calculation)
-        loss = module.validation_step(batch, 0)
+        with patch.object(module, "log"):
+            loss = module.validation_step(batch, 0)
         assert isinstance(loss, torch.Tensor)
 
     @pytest.mark.integration
