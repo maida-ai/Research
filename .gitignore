@@ -2,6 +2,9 @@
 reports/
 artifacts/
 lightning_logs/
+benchmark_results/
+test_results/
+test_plots/
 
 # Environment
 .venv/

@@ -2,15 +2,21 @@
 source =
     ; Main package to cover
     efficient_longctx
+    ; benchmark  ; Ignore the benchmarks for now
 omit =
     ; Tests and test-related files
     */tests/*
     */test_*
     */__pycache__/*
+    ; Examples
+    */examples/*
     ; Constants file -- no need to cover
     */constants.py
     ; Training script -- now covered by tests
     ; */training/train.py
+    ; Executables
+    */main.py
+    */run*.py
 
 [report]
 show_missing = true

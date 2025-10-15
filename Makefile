@@ -11,7 +11,7 @@ SHELL 				:= /bin/bash
 .SHELLFLAGS 		:= -eu -o pipefail -c
 
 
-.PHONY: setup test lint format clean help
+.PHONY: setup test lint format clean benchmark benchmark-quick benchmark-test help
 
 # Default target
 help:
@@ -21,6 +21,9 @@ help:
 	@echo "  lint     - Run linting checks"
 	@echo "  format   - Format code"
 	@echo "  clean    - Clean up generated files"
+	@echo "  benchmark - Run comprehensive benchmark"
+	@echo "  benchmark-quick - Run quick benchmark"
+	@echo "  benchmark-test - Test benchmarking framework"
 	@echo "  help     - Show this help message"
 
 # Set up development environment
@@ -55,5 +58,18 @@ clean:
 	rm -rf .coverage
 	rm -rf htmlcov/
 	rm -rf coverage.xml
+	rm -rf reports/benchmark/
 	find . -type d -name __pycache__ -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
+
+# Run comprehensive benchmark
+benchmark:
+	uv run python benchmark/main.py comprehensive
+
+# Run quick benchmark
+benchmark-quick:
+	uv run python benchmark/main.py quick
+
+# Test benchmarking framework
+benchmark-test:
+	uv run python benchmark/main.py test
