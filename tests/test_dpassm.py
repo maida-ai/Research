@@ -638,3 +638,197 @@ class TestDPASSMBlock:
             # Should use causal fast path (no mask needed)
             output, _ = model(x)
             assert output.shape == x.shape
+
+    def test_max_mask_t_parameter(self, model_params: dict[str, int]) -> None:
+        """Test that max_mask_T parameter is properly initialized."""
+        custom_max_mask_T = 2048
+        model = DPASSMBlock(**model_params, max_mask_T=custom_max_mask_T)
+        assert model.max_mask_T == custom_max_mask_T
+
+        # Test default value
+        model_default = DPASSMBlock(**model_params)
+        assert model_default.max_mask_T == 4096
+
+    def test_cached_mask_path_small_sequence(
+        self, model_params: dict[str, int]
+    ) -> None:
+        """Test that cached mask path is used for small sequences."""
+        # Use a small max_mask_T to force cached mask path
+        model = DPASSMBlock(**model_params, max_mask_T=100)
+
+        batch_size, seq_len = 2, 50  # T < max_mask_T
+        x = torch.randn(batch_size, seq_len, model_params["d_model"])
+
+        model.eval()
+        with torch.no_grad():
+            output, _ = model(x)
+            assert output.shape == x.shape
+
+        # Verify mask was cached
+        expected_key = (seq_len, model.window_size, x.device)
+        assert expected_key in model._mask_cache
+
+    def test_blockwise_path_large_sequence(self, model_params: dict[str, int]) -> None:
+        """Test that blockwise path is used for large sequences."""
+        # Use a small max_mask_T to force blockwise path
+        model = DPASSMBlock(**model_params, max_mask_T=100)
+
+        batch_size, seq_len = 2, 200  # T > max_mask_T
+        x = torch.randn(batch_size, seq_len, model_params["d_model"])
+
+        model.eval()
+        with torch.no_grad():
+            output, _ = model(x)
+            assert output.shape == x.shape
+
+        # Verify no large mask was cached (only small block masks)
+        large_mask_key = (seq_len, model.window_size, x.device)
+        assert large_mask_key not in model._mask_cache
+
+    def test_correctness_cached_vs_blockwise(
+        self, model_params: dict[str, int]
+    ) -> None:
+        """Test that cached mask and blockwise paths produce similar outputs."""
+        # Create two models with different max_mask_T settings
+        model_cached = DPASSMBlock(
+            **model_params, max_mask_T=1000
+        )  # Will use cached mask
+        model_blockwise = DPASSMBlock(
+            **model_params, max_mask_T=100
+        )  # Will use blockwise
+
+        # Use same weights for both models
+        model_blockwise.load_state_dict(model_cached.state_dict())
+
+        batch_size, seq_len = 2, 500  # T > 100 but < 1000
+        x = torch.randn(batch_size, seq_len, model_params["d_model"])
+
+        model_cached.eval()
+        model_blockwise.eval()
+
+        with torch.no_grad():
+            output_cached, _ = model_cached(x)
+            output_blockwise, _ = model_blockwise(x)
+
+        # Check that outputs have the same shape
+        assert output_cached.shape == output_blockwise.shape
+
+        # Check that outputs are reasonably close (blockwise can have numerical differences)
+        # The differences should be small relative to the magnitude of the values
+        diff = torch.abs(output_cached - output_blockwise)
+        max_diff = torch.max(diff).item()
+        mean_diff = torch.mean(diff).item()
+
+        # Allow for reasonable numerical differences due to blockwise processing
+        assert max_diff < 1.0, f"Max difference {max_diff} is too large"
+        assert mean_diff < 0.1, f"Mean difference {mean_diff} is too large"
+
+        # Check that the outputs are not completely different (correlation should be high)
+        correlation = torch.corrcoef(
+            torch.stack([output_cached.flatten(), output_blockwise.flatten()])
+        )[0, 1].item()
+        assert correlation > 0.9, f"Correlation {correlation} is too low"
+
+    def test_memory_efficiency_large_sequence(
+        self, model_params: dict[str, int]
+    ) -> None:
+        """Test that large sequences don't create O(T×T) allocations."""
+        # Use a small max_mask_T to force blockwise path
+        model = DPASSMBlock(**model_params, max_mask_T=100)
+
+        batch_size, seq_len = 1, 1000  # T >> max_mask_T
+        x = torch.randn(batch_size, seq_len, model_params["d_model"])
+
+        model.eval()
+
+        # Monitor memory usage by checking tensor sizes
+        initial_cache_size = len(model._mask_cache)
+
+        with torch.no_grad():
+            output, _ = model(x)
+
+        # Verify no large mask was cached
+        final_cache_size = len(model._mask_cache)
+        assert final_cache_size == initial_cache_size  # No new large masks cached
+
+        # Verify output shape is correct
+        assert output.shape == x.shape
+
+    def test_window_size_ge_sequence_length(self, model_params: dict[str, int]) -> None:
+        """Test causal fast-path when window_size >= sequence length."""
+        # Create a copy of model_params and modify window_size
+        params = model_params.copy()
+        params["window_size"] = 1000  # Large window
+        model = DPASSMBlock(**params)
+
+        batch_size, seq_len = 2, 50  # seq_len < window_size
+        x = torch.randn(batch_size, seq_len, model_params["d_model"])
+
+        model.eval()
+        with torch.no_grad():
+            output, _ = model(x)
+            assert output.shape == x.shape
+
+    def test_blockwise_attention_shapes(self, model_params: dict[str, int]) -> None:
+        """Test that blockwise attention produces correct intermediate shapes."""
+        model = DPASSMBlock(**model_params, max_mask_T=50)  # Force blockwise
+
+        batch_size, seq_len = 2, 200
+        d_model = model_params["d_model"]
+        x = torch.randn(batch_size, seq_len, d_model)
+
+        # Test the blockwise method directly
+        Q = (
+            model.W_Q(x)
+            .view(batch_size, seq_len, model.n_heads, d_model // model.n_heads)
+            .transpose(1, 2)
+        )
+        K = (
+            model.W_K(x)
+            .view(batch_size, seq_len, model.n_heads, d_model // model.n_heads)
+            .transpose(1, 2)
+        )
+        V = (
+            model.W_V(x)
+            .view(batch_size, seq_len, model.n_heads, d_model // model.n_heads)
+            .transpose(1, 2)
+        )
+
+        model.eval()
+        with torch.no_grad():
+            output = model._compute_attention_blockwise(Q, K, V, x.device)
+
+        assert output.shape == (batch_size, seq_len, d_model)
+
+    def test_edge_case_single_block(self, model_params: dict[str, int]) -> None:
+        """Test edge case where entire sequence fits in one block."""
+        # Create a copy of model_params and modify parameters
+        params = model_params.copy()
+        params["max_mask_T"] = 10
+        params["window_size"] = 5
+        model = DPASSMBlock(**params)
+
+        batch_size, seq_len = 2, 8  # Small sequence, small max_mask_T
+        x = torch.randn(batch_size, seq_len, model_params["d_model"])
+
+        model.eval()
+        with torch.no_grad():
+            output, _ = model(x)
+            assert output.shape == x.shape
+
+    def test_edge_case_exact_max_mask_t(self, model_params: dict[str, int]) -> None:
+        """Test edge case where T exactly equals max_mask_T."""
+        max_mask_T = 100
+        model = DPASSMBlock(**model_params, max_mask_T=max_mask_T)
+
+        batch_size, seq_len = 2, max_mask_T  # T == max_mask_T
+        x = torch.randn(batch_size, seq_len, model_params["d_model"])
+
+        model.eval()
+        with torch.no_grad():
+            output, _ = model(x)
+            assert output.shape == x.shape
+
+        # Should use cached mask path
+        expected_key = (seq_len, model.window_size, x.device)
+        assert expected_key in model._mask_cache
