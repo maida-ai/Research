@@ -16,6 +16,8 @@ class DPASSMBlock(nn.Module):
         window_size: Window size for attention
         ssm_state_dim: Dimension of the SSM state
         dropout: Dropout probability
+        max_mask_T: Maximum sequence length for cached mask approach. Beyond this,
+                   blockwise SDPA is used to avoid O(T×T) memory allocations.
         **kwargs: All other keyword arguments are ignored
     """
 
@@ -26,6 +28,7 @@ class DPASSMBlock(nn.Module):
         window_size: int,
         ssm_state_dim: int,
         dropout: float = 0.1,
+        max_mask_T: int = 4096,
         **kwargs,
     ):
         super().__init__()
@@ -39,6 +42,7 @@ class DPASSMBlock(nn.Module):
         self.window_size = window_size
         self.ssm_state_dim = ssm_state_dim
         self.dropout_rate = dropout
+        self.max_mask_T = max_mask_T
 
         # Mask cache for performance
         self._mask_cache = {}
@@ -123,9 +127,12 @@ class DPASSMBlock(nn.Module):
         # Use cached bool mask and causal fast-path
         if self.window_size >= T:
             attn_mask, is_causal = None, True
-        else:
+        elif T <= self.max_mask_T:
             attn_mask = self._get_window_mask(T, self.window_size, x.device)
             is_causal = False
+        else:
+            # Blockwise SDPA for large T to avoid O(T×T) memory allocations
+            return self._compute_attention_blockwise(Q, K, V, x.device)
 
         # Use single source of truth for dropout
         p = self.drop.p if self.training else 0.0
@@ -137,6 +144,76 @@ class DPASSMBlock(nn.Module):
 
         # Reshape back to (B, T, d)
         attention_output = attention_output.transpose(1, 2).contiguous().view(B, T, d)
+
+        # Final linear projection
+        attention_output = self.W_O(attention_output)
+        attention_output = self.drop(attention_output)
+
+        return attention_output
+
+    def _compute_attention_blockwise(
+        self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, device: torch.device
+    ) -> torch.Tensor:
+        """
+        Compute attention using blockwise SDPA to avoid O(T×T) memory allocations.
+
+        This method processes attention in sliding blocks over the target time dimension,
+        where each block attends to its left window only. This avoids creating a full
+        T×T attention mask for large sequences.
+
+        Args:
+            Q: Query tensor of shape (B, h, T, d_h)
+            K: Key tensor of shape (B, h, T, d_h)
+            V: Value tensor of shape (B, h, T, d_h)
+            device: Device for tensor operations
+
+        Returns:
+            Attention output tensor of shape (B, T, d_model)
+        """
+        B, h, T, d_h = Q.shape
+        W = self.window_size
+
+        # Use single source of truth for dropout
+        p = self.drop.p if self.training else 0.0
+
+        # Choose block size (e.g., BS = W or 2W)
+        BS = min(2 * W, T)
+        out_chunks = []
+
+        # Process in sliding blocks over target time dimension
+        for t0 in range(0, T, BS):
+            t1 = min(T, t0 + BS)
+            # Keys/values span [max(0,t1-W), t1)
+            ks = max(0, t1 - W)
+
+            Qb = Q[:, :, t0:t1, :]  # (B, h, BS, d_h)
+            Kb = K[:, :, ks:t1, :]  # (B, h, KB, d_h)
+            Vb = V[:, :, ks:t1, :]
+
+            # Build a small causal mask inside the block:
+            # target positions are t0..t1-1, allowed keys <= each position
+            # local indices:
+            Tb = t1 - t0
+            Kb_len = t1 - ks
+            i = torch.arange(Tb, device=device)[:, None]
+            j = torch.arange(Kb_len, device=device)[None, :]
+
+            # position of key j corresponds to global time ks+j
+            # we need j_global <= i_global -> (ks+j) <= (t0+i) => j <= i + (t0-ks)
+            shift = t0 - ks
+            band = j <= (i + shift)
+            mask_b = band.view(1, 1, Tb, Kb_len)
+
+            out_b = F.scaled_dot_product_attention(
+                Qb, Kb, Vb, attn_mask=mask_b, dropout_p=p, is_causal=False
+            )
+            out_chunks.append(out_b)
+
+        # Concatenate all blocks
+        out = torch.cat(out_chunks, dim=2)  # (B, h, T, d_h)
+
+        # Reshape back to (B, T, d)
+        attention_output = out.transpose(1, 2).contiguous().view(B, T, self.d_model)
 
         # Final linear projection
         attention_output = self.W_O(attention_output)
