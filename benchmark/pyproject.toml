@@ -1,0 +1,83 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["benchmark"]
+
+[project]
+name = "efficient-longctx-benchmark"
+version = "0.1.0"
+description = "Benchmarking framework for efficient long-context attention blocks"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {file = "../LICENSE"}
+authors = [
+    {name = "Maida.AI Research Team"},
+]
+dependencies = [
+    "torch~=2.8.0",
+    "numpy~=2.3.3",
+    "matplotlib~=3.10.6",
+    "psutil~=6.1.0",
+    "pytorch-lightning~=2.5.5",
+]
+
+[dependency-groups]
+dev = [
+    "pytest~=8.4.2",
+    "pytest-cov~=7.0.0",
+    "ruff~=0.13.2",
+    "isort~=6.1.0",
+]
+
+[tool.uv.sources]
+efficient-longctx = { workspace = true }
+
+# =============
+# Lint and Test
+# =============
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+known_first_party = ["efficient_longctx", "benchmark"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "B",  # flake8-bugbear
+    "C4", # flake8-comprehensions
+    "UP", # pyupgrade
+]
+ignore = [
+    "E501",  # line too long, handled by black
+    "B008",  # do not perform function calls in argument defaults
+    "C901",  # too complex
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "--cov=benchmark",
+    "--cov-report=term-missing",
+    "--cov-report=html:reports/benchmark/htmlcov",
+    "--cov-report=xml:reports/benchmark/coverage.xml",
+]
+markers = [
+    "integration: marks tests as integration tests",
+    "slow: marks tests as slow running",
+]

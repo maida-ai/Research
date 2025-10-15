@@ -48,6 +48,7 @@ dev = [
     "isort~=6.1.0",
     # Local package
     "efficient-longctx",
+    # "benchmark",
 ]
 
 
@@ -62,10 +63,12 @@ no-build-isolation-package = [
 [tool.uv.workspace]
 members = [
     ".",
+    "benchmark",
 ]
 
 [tool.uv.sources]
 efficient-longctx = { workspace = true }
+benchmark = { workspace = true }
 
 # =============
 # Lint and Test
@@ -75,4 +78,4 @@ efficient-longctx = { workspace = true }
 profile = "black"
 multi_line_output = 3
 line_length = 88
-known_first_party = ["efficient_longctx"]
+known_first_party = ["efficient_longctx", "benchmark"]
