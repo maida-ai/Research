@@ -2,6 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# Enable TF32 for better performance on Ampere/Hopper GPUs
+torch.set_float32_matmul_precision("medium")
+
 
 class DPASSMBlock(nn.Module):
     """
@@ -51,20 +54,22 @@ class DPASSMBlock(nn.Module):
         self.ln1 = nn.LayerNorm(d_model)
         self.ln2 = nn.LayerNorm(d_model)
 
-        # QKV and output projections
-        self.W_Q = nn.Linear(d_model, d_model)
-        self.W_K = nn.Linear(d_model, d_model)
-        self.W_V = nn.Linear(d_model, d_model)
+        # Split projections with CUDA stream overlap for better performance
+        # W_qkv: QKV projections (bias=False for better cublasLt algo selection)
+        # W_ug: SSM input + gate projections (bias=True for gate initialization)
+        self.W_qkv = nn.Linear(d_model, 3 * d_model, bias=False)
+        self.W_ug = nn.Linear(d_model, ssm_state_dim + d_model, bias=True)
         self.W_O = nn.Linear(d_model, d_model)
 
-        # Gate for fusing attention and SSM paths
-        self.gate = nn.Linear(d_model, d_model)
+        # Keep B layer for backward compatibility (fallback when u is None)
+        self.B = nn.Linear(d_model, ssm_state_dim, bias=False)
 
         # SSM parameters
         self.A = nn.Parameter(torch.zeros(ssm_state_dim))  # Initialize small values
         with torch.no_grad():
             self.A.uniform_(-0.1, 0.1)
 
+        # Keep B layer for backward compatibility (fallback when u is None)
         self.B = nn.Linear(d_model, ssm_state_dim, bias=False)
         self.C = nn.Linear(ssm_state_dim, d_model, bias=False)
 
@@ -119,10 +124,76 @@ class DPASSMBlock(nn.Module):
         B, T, d = x.shape
         d_h = d // self.n_heads
 
-        # Project Q, K, V
-        Q = self.W_Q(x).view(B, T, self.n_heads, d_h).transpose(1, 2)  # (B, h, T, d_h)
-        K = self.W_K(x).view(B, T, self.n_heads, d_h).transpose(1, 2)  # (B, h, T, d_h)
-        V = self.W_V(x).view(B, T, self.n_heads, d_h).transpose(1, 2)  # (B, h, T, d_h)
+        # Split projections for attention computation
+        qkv = self.W_qkv(x)  # (B, T, 3*d)
+        Q, K, V = qkv.split(d, dim=-1)  # Each: (B, T, d)
+
+        # Reshape Q, K, V for attention
+        Q = (
+            Q.view(B, T, self.n_heads, d_h).transpose(1, 2).contiguous()
+        )  # (B, h, T, d_h)
+        K = (
+            K.view(B, T, self.n_heads, d_h).transpose(1, 2).contiguous()
+        )  # (B, h, T, d_h)
+        V = (
+            V.view(B, T, self.n_heads, d_h).transpose(1, 2).contiguous()
+        )  # (B, h, T, d_h)
+
+        # Use cached bool mask and causal fast-path
+        if self.window_size >= T:
+            attn_mask, is_causal = None, True
+        elif T <= self.max_mask_T:
+            attn_mask = self._get_window_mask(T, self.window_size, x.device)
+            is_causal = False
+        else:
+            # Blockwise SDPA for large T to avoid O(T×T) memory allocations
+            return self._compute_attention_blockwise(Q, K, V, x.device)
+
+        # Use single source of truth for dropout
+        p = self.drop.p if self.training else 0.0
+
+        # Use PyTorch's optimized scaled_dot_product_attention
+        attention_output = F.scaled_dot_product_attention(
+            Q, K, V, attn_mask=attn_mask, dropout_p=p, is_causal=is_causal
+        )
+
+        # Reshape back to (B, T, d)
+        attention_output = attention_output.transpose(1, 2).contiguous().view(B, T, d)
+
+        # Final linear projection
+        attention_output = self.W_O(attention_output)
+        attention_output = self.drop(attention_output)
+
+        return attention_output
+
+    def _compute_attention_from_qkv(
+        self, x: torch.Tensor, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Compute windowed causal attention using pre-computed Q, K, V tensors.
+
+        Args:
+            x: Input tensor of shape (batch_size, seq_len, d_model) - used for shape info
+            Q: Query tensor of shape (batch_size, seq_len, d_model)
+            K: Key tensor of shape (batch_size, seq_len, d_model)
+            V: Value tensor of shape (batch_size, seq_len, d_model)
+
+        Returns:
+            Attention output tensor of shape (batch_size, seq_len, d_model)
+        """
+        B, T, d = x.shape
+        d_h = d // self.n_heads
+
+        # Reshape Q, K, V for attention
+        Q = (
+            Q.view(B, T, self.n_heads, d_h).transpose(1, 2).contiguous()
+        )  # (B, h, T, d_h)
+        K = (
+            K.view(B, T, self.n_heads, d_h).transpose(1, 2).contiguous()
+        )  # (B, h, T, d_h)
+        V = (
+            V.view(B, T, self.n_heads, d_h).transpose(1, 2).contiguous()
+        )  # (B, h, T, d_h)
 
         # Use cached bool mask and causal fast-path
         if self.window_size >= T:
@@ -222,7 +293,10 @@ class DPASSMBlock(nn.Module):
         return attention_output
 
     def _compute_ssm(
-        self, x_in: torch.Tensor, state: torch.Tensor | None = None
+        self,
+        x_in: torch.Tensor,
+        state: torch.Tensor | None = None,
+        u: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Compute SSM recurrent update with preallocated outputs.
@@ -230,13 +304,14 @@ class DPASSMBlock(nn.Module):
         Implementation follows specification:
         - Uses pre-normed input x_in from LN1(x)
         - Sequential loop over t = 0..T-1
-        - s_t = alpha * s_{t-1} + B(x_in[:, t, :])
+        - s_t = alpha * s_{t-1} + u_t (where u_t comes from fused projection)
         - alpha = torch.tanh(self.A) to keep stable in (-1,1)
         - y_ssm[:, t, :] = C(s_t)
 
         Args:
             x_in: Pre-normalized input tensor of shape (batch_size, seq_len, d_model)
             state: Previous SSM state tensor of shape (batch_size, ssm_state_dim) or None
+            u: Pre-computed SSM input tensor of shape (batch_size, seq_len, ssm_state_dim) or None
 
         Returns:
             Tuple of (ssm_output, new_state) where:
@@ -256,8 +331,10 @@ class DPASSMBlock(nn.Module):
         # alpha = torch.tanh(self.A) to keep it stable in (-1,1) as specified
         alpha = torch.tanh(self.A)  # (d_s,)
 
-        # Precompute B(x_in) once for efficiency
-        u = self.B(x_in)  # (B, T, d_s)
+        # Use provided u or compute it (for backward compatibility)
+        if u is None:
+            # Fallback: compute u using B(x_in) - this should not happen in normal fused flow
+            u = self.B(x_in)  # (B, T, d_s)
 
         # Preallocate output tensor to avoid Python list overhead
         y_ssm = torch.empty(B, T, self.d_model, device=x_in.device, dtype=x_in.dtype)
@@ -301,15 +378,43 @@ class DPASSMBlock(nn.Module):
         # Pre-layer normalization
         x_norm1 = self.ln1(x)
 
+        # Split projections with CUDA stream overlap for better performance
+        if torch.cuda.is_available():
+            # Launch QKV and UG projections on separate streams for overlap
+            s_qkv, s_ug = torch.cuda.Stream(), torch.cuda.Stream()
+
+            with torch.cuda.stream(s_qkv):
+                qkv = self.W_qkv(x_norm1)  # (B, T, 3*d)
+
+            with torch.cuda.stream(s_ug):
+                ug = self.W_ug(x_norm1)  # (B, T, ssm_state_dim + d)
+
+            # Sync both streams before proceeding
+            e1, e2 = torch.cuda.Event(True), torch.cuda.Event(True)
+            e1.record(s_qkv)
+            e2.record(s_ug)
+            torch.cuda.current_stream().wait_event(e1)
+            torch.cuda.current_stream().wait_event(e2)
+        else:
+            # Fallback for CPU
+            qkv = self.W_qkv(x_norm1)
+            ug = self.W_ug(x_norm1)
+
+        # Split outputs
+        Q, K, V = qkv.split(d, dim=-1)  # Each: (B, T, d)
+        u, gate_pre = ug.split(
+            [self.ssm_state_dim, d], dim=-1
+        )  # u: (B, T, ssm_state_dim), gate_pre: (B, T, d)
+
         # Dual-path forward:
         # 1. Local attention path (windowed causal attention)
-        y_attn = self._compute_attention(x_norm1)
+        y_attn = self._compute_attention_from_qkv(x_norm1, Q, K, V)
 
-        # 2. SSM path (global state-space model)
-        y_ssm, new_ssm_state = self._compute_ssm(x_norm1, ssm_state)
+        # 2. SSM path (global state-space model) - pass u directly
+        y_ssm, new_ssm_state = self._compute_ssm(x_norm1, ssm_state, u)
 
-        # 3. Feature-wise gate: g = torch.sigmoid(self.gate(x_norm1)) - use pre-norm for stability
-        g = torch.sigmoid(self.gate(x_norm1))  # shape (B,T,d)
+        # 3. Feature-wise gate: g = torch.sigmoid(gate_pre) - use pre-computed gate_pre
+        g = torch.sigmoid(gate_pre)  # shape (B,T,d)
 
         # 4. Fuse: y = g * y_attn + (1.0 - g) * y_ssm
         y = g * y_attn + (1.0 - g) * y_ssm
@@ -354,12 +459,20 @@ class DPASSMBlock(nn.Module):
         # Pre-layer normalization for the single token
         x_norm1 = self.ln1(x_t)  # (B, 1, d)
 
-        # Project current token Q, K, V
-        Q = (
-            self.W_Q(x_norm1).view(B, 1, self.n_heads, d_h).transpose(1, 2)
-        )  # (B, h, 1, d_h)
-        K_new = self.W_K(x_norm1).view(B, 1, self.n_heads, d_h).transpose(1, 2)
-        V_new = self.W_V(x_norm1).view(B, 1, self.n_heads, d_h).transpose(1, 2)
+        # Split projections for streaming inference
+        qkv = self.W_qkv(x_norm1)  # (B, 1, 3*d)
+        ug = self.W_ug(x_norm1)  # (B, 1, ssm_state_dim + d)
+
+        # Split outputs
+        Q, K, V = qkv.split(d, dim=-1)  # Each: (B, 1, d)
+        u, gate_pre = ug.split(
+            [self.ssm_state_dim, d], dim=-1
+        )  # u: (B, 1, ssm_state_dim), gate_pre: (B, 1, d)
+
+        # Reshape Q, K, V for attention
+        Q = Q.view(B, 1, self.n_heads, d_h).transpose(1, 2)  # (B, h, 1, d_h)
+        K_new = K.view(B, 1, self.n_heads, d_h).transpose(1, 2)
+        V_new = V.view(B, 1, self.n_heads, d_h).transpose(1, 2)
 
         # Update KV cache
         if attn_state is None:
@@ -377,17 +490,17 @@ class DPASSMBlock(nn.Module):
         y_attn = y_attn.transpose(1, 2).contiguous().view(B, 1, d)
         y_attn = self.drop(self.W_O(y_attn))
 
-        # SSM update (same logic as before)
+        # SSM update using pre-computed u
         if ssm_state is None:
             ssm_state = torch.zeros(
                 B, self.ssm_state_dim, device=x_t.device, dtype=x_t.dtype
             )
         alpha = torch.tanh(self.A)
-        current_state = alpha * ssm_state + self.B(x_norm1[:, 0, :])
+        current_state = alpha * ssm_state + u[:, 0, :]  # Use pre-computed u
         y_ssm = self.drop(self.C(current_state).unsqueeze(1))  # (B, 1, d)
 
-        # Use pre-norm for gate (more stable)
-        g = torch.sigmoid(self.gate(x_norm1))  # (B, 1, d)
+        # Use pre-computed gate_pre
+        g = torch.sigmoid(gate_pre)  # (B, 1, d)
         y = g * y_attn + (1.0 - g) * y_ssm
 
         # Apply residual connection
