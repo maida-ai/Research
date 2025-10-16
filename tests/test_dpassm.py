@@ -1030,3 +1030,216 @@ class TestDPASSMBlock:
             )
 
             print(f"T={seq_len}: {tokens_per_sec:.2f} tokens/sec")
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+    def test_dual_stream_output_parity(self, model_params: dict[str, int]) -> None:
+        """Test that dual CUDA streams produce identical outputs to sequential execution."""
+        # Create model and move to CUDA
+        model = DPASSMBlock(**model_params).cuda()
+        model.eval()
+
+        # Test parameters
+        batch_size, seq_len = 2, 32
+        d_model = model_params["d_model"]
+
+        # Create CUDA input
+        x = torch.randn(batch_size, seq_len, d_model, device="cuda")
+        ssm_state = torch.randn(
+            batch_size, model_params["ssm_state_dim"], device="cuda"
+        )
+
+        # Set deterministic behavior for reproducible results
+        torch.manual_seed(42)
+
+        # Run with dual streams (current implementation)
+        with torch.no_grad():
+            output_dual_stream, state_dual_stream = model(x, ssm_state)
+
+        # Reset seed and run sequential version (we need to temporarily modify the model)
+        torch.manual_seed(42)
+
+        # Create a copy of the model for sequential execution
+        model_seq = DPASSMBlock(**model_params).cuda()
+        model_seq.load_state_dict(model.state_dict())
+        model_seq.eval()
+
+        # Temporarily patch the forward method to use sequential execution
+
+        def sequential_forward(self, x, ssm_state=None):
+            """Sequential version without CUDA streams."""
+            B, T, d = x.shape
+            x_norm1 = self.ln1(x)
+
+            # Split projections (keep existing stream overlap for QKV/UG)
+            if torch.cuda.is_available():
+                s_qkv, s_ug = torch.cuda.Stream(), torch.cuda.Stream()
+                with torch.cuda.stream(s_qkv):
+                    qkv = self.W_qkv(x_norm1)
+                with torch.cuda.stream(s_ug):
+                    ug = self.W_ug(x_norm1)
+                e1, e2 = torch.cuda.Event(True), torch.cuda.Event(True)
+                e1.record(s_qkv)
+                e2.record(s_ug)
+                torch.cuda.current_stream().wait_event(e1)
+                torch.cuda.current_stream().wait_event(e2)
+            else:
+                qkv = self.W_qkv(x_norm1)
+                ug = self.W_ug(x_norm1)
+
+            Q, K, V = qkv.split(d, dim=-1)
+            u, gate_pre = ug.split([self.ssm_state_dim, d], dim=-1)
+
+            # Sequential execution (no dual streams)
+            y_attn = self._compute_attention_from_qkv(x_norm1, Q, K, V)
+            y_ssm, new_ssm_state = self._compute_ssm(x_norm1, ssm_state, u)
+
+            g = torch.sigmoid(gate_pre)
+            y = g * y_attn + (1.0 - g) * y_ssm
+            x = x + self.drop(y)
+            x = x + self.drop(self.mlp(self.ln2(x)))
+
+            return x, new_ssm_state
+
+        # Apply the sequential forward method
+        import types
+
+        model_seq.forward = types.MethodType(sequential_forward, model_seq)
+
+        with torch.no_grad():
+            output_seq, state_seq = model_seq(x, ssm_state)
+
+        # Check output parity
+        max_output_diff = torch.max(torch.abs(output_dual_stream - output_seq)).item()
+        max_state_diff = torch.max(torch.abs(state_dual_stream - state_seq)).item()
+
+        # Allow for small numerical differences due to floating point precision
+        tolerance = 1e-6
+        assert max_output_diff < tolerance, (
+            f"Output mismatch: max diff = {max_output_diff:.2e} > {tolerance:.2e}"
+        )
+        assert max_state_diff < tolerance, (
+            f"State mismatch: max diff = {max_state_diff:.2e} > {tolerance:.2e}"
+        )
+
+        print("Dual stream output parity test passed:")
+        print(f"  Max output diff: {max_output_diff:.2e}")
+        print(f"  Max state diff: {max_state_diff:.2e}")
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
+    def test_dual_stream_performance_benchmark(
+        self, model_params: dict[str, int]
+    ) -> None:
+        """Benchmark dual CUDA streams vs sequential execution for performance comparison."""
+        import time
+
+        # Create model and move to CUDA
+        model = DPASSMBlock(**model_params).cuda()
+        model.eval()
+
+        # Test parameters - use longer sequences to see more benefit
+        batch_size = 2
+        test_lengths = [512, 1024, 2048]
+
+        print("\nDual Stream Performance Benchmark:")
+        print("=" * 50)
+
+        for seq_len in test_lengths:
+            d_model = model_params["d_model"]
+            x = torch.randn(batch_size, seq_len, d_model, device="cuda")
+            ssm_state = torch.randn(
+                batch_size, model_params["ssm_state_dim"], device="cuda"
+            )
+
+            # Warmup
+            with torch.no_grad():
+                for _ in range(5):
+                    _ = model(x, ssm_state)
+
+            torch.cuda.synchronize()
+
+            # Benchmark dual streams (current implementation)
+            start_time = time.time()
+            with torch.no_grad():
+                for _ in range(20):
+                    _ = model(x, ssm_state)
+            torch.cuda.synchronize()
+            dual_stream_time = time.time() - start_time
+
+            # Create sequential version for comparison
+            model_seq = DPASSMBlock(**model_params).cuda()
+            model_seq.load_state_dict(model.state_dict())
+            model_seq.eval()
+
+            def sequential_forward(self, x, ssm_state=None):
+                """Sequential version without dual CUDA streams."""
+                B, T, d = x.shape
+                x_norm1 = self.ln1(x)
+
+                # Split projections (keep existing stream overlap for QKV/UG)
+                if torch.cuda.is_available():
+                    s_qkv, s_ug = torch.cuda.Stream(), torch.cuda.Stream()
+                    with torch.cuda.stream(s_qkv):
+                        qkv = self.W_qkv(x_norm1)
+                    with torch.cuda.stream(s_ug):
+                        ug = self.W_ug(x_norm1)
+                    e1, e2 = torch.cuda.Event(True), torch.cuda.Event(True)
+                    e1.record(s_qkv)
+                    e2.record(s_ug)
+                    torch.cuda.current_stream().wait_event(e1)
+                    torch.cuda.current_stream().wait_event(e2)
+                else:
+                    qkv = self.W_qkv(x_norm1)
+                    ug = self.W_ug(x_norm1)
+
+                Q, K, V = qkv.split(d, dim=-1)
+                u, gate_pre = ug.split([self.ssm_state_dim, d], dim=-1)
+
+                # Sequential execution (no dual streams)
+                y_attn = self._compute_attention_from_qkv(x_norm1, Q, K, V)
+                y_ssm, new_ssm_state = self._compute_ssm(x_norm1, ssm_state, u)
+
+                g = torch.sigmoid(gate_pre)
+                y = g * y_attn + (1.0 - g) * y_ssm
+                x = x + self.drop(y)
+                x = x + self.drop(self.mlp(self.ln2(x)))
+
+                return x, new_ssm_state
+
+            import types
+
+            model_seq.forward = types.MethodType(sequential_forward, model_seq)
+
+            # Warmup sequential version
+            with torch.no_grad():
+                for _ in range(5):
+                    _ = model_seq(x, ssm_state)
+
+            torch.cuda.synchronize()
+
+            # Benchmark sequential execution
+            start_time = time.time()
+            with torch.no_grad():
+                for _ in range(20):
+                    _ = model_seq(x, ssm_state)
+            torch.cuda.synchronize()
+            sequential_time = time.time() - start_time
+
+            # Calculate metrics
+            dual_stream_tokens_per_sec = (batch_size * seq_len * 20) / dual_stream_time
+            sequential_tokens_per_sec = (batch_size * seq_len * 20) / sequential_time
+            speedup = sequential_time / dual_stream_time
+
+            print(
+                f"T={seq_len:4d}: Dual Stream: {dual_stream_tokens_per_sec:8.0f} tok/s, "
+                f"Sequential: {sequential_tokens_per_sec:8.0f} tok/s, "
+                f"Speedup: {speedup:.2f}x"
+            )
+
+            # Basic performance check - dual streams should not be significantly slower
+            # Note: For small workloads, stream overhead might make dual streams slower
+            # This is expected behavior and the optimization shows benefit at larger scales
+            assert speedup >= 0.80, (
+                f"Dual streams significantly slower than expected: {speedup:.2f}x speedup at T={seq_len}"
+            )
+
+        print("=" * 50)

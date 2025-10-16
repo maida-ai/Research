@@ -406,12 +406,32 @@ class DPASSMBlock(nn.Module):
             [self.ssm_state_dim, d], dim=-1
         )  # u: (B, T, ssm_state_dim), gate_pre: (B, T, d)
 
-        # Dual-path forward:
-        # 1. Local attention path (windowed causal attention)
-        y_attn = self._compute_attention_from_qkv(x_norm1, Q, K, V)
+        # Dual-path forward with CUDA stream overlap for better performance
+        if torch.cuda.is_available():
+            # Create separate streams for attention and SSM computation
+            s_attn, s_ssm = torch.cuda.Stream(), torch.cuda.Stream()
 
-        # 2. SSM path (global state-space model) - pass u directly
-        y_ssm, new_ssm_state = self._compute_ssm(x_norm1, ssm_state, u)
+            with torch.cuda.stream(s_attn):
+                # 1. Local attention path (windowed causal attention)
+                y_attn = self._compute_attention_from_qkv(x_norm1, Q, K, V)
+
+            with torch.cuda.stream(s_ssm):
+                # 2. SSM path (global state-space model) - pass u directly
+                y_ssm, new_ssm_state = self._compute_ssm(x_norm1, ssm_state, u)
+
+            # Synchronize both streams before fusion
+            e1, e2 = torch.cuda.Event(True), torch.cuda.Event(True)
+            e1.record(s_attn)
+            e2.record(s_ssm)
+            torch.cuda.current_stream().wait_event(e1)
+            torch.cuda.current_stream().wait_event(e2)
+        else:
+            # Fallback for CPU: sequential execution
+            # 1. Local attention path (windowed causal attention)
+            y_attn = self._compute_attention_from_qkv(x_norm1, Q, K, V)
+
+            # 2. SSM path (global state-space model) - pass u directly
+            y_ssm, new_ssm_state = self._compute_ssm(x_norm1, ssm_state, u)
 
         # 3. Feature-wise gate: g = torch.sigmoid(gate_pre) - use pre-computed gate_pre
         g = torch.sigmoid(gate_pre)  # shape (B,T,d)
