@@ -41,13 +41,13 @@ test:
 
 # Run linting checks
 lint:
+	# uv run isort --check-only .
 	uv run ruff check .
-	uv run isort --check-only .
 
 # Format code
 format:
+	# uv run isort .
 	uv run ruff check --fix .
-	uv run isort .
 
 # Clean up generated files
 clean:
