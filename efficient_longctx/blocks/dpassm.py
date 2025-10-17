@@ -21,6 +21,9 @@ class DPASSMBlock(nn.Module):
         dropout: Dropout probability
         max_mask_T: Maximum sequence length for cached mask approach. Beyond this,
                    blockwise SDPA is used to avoid O(T×T) memory allocations.
+        ssm_impl: SSM implementation ("naive", "tile_scan", or "auto")
+        tile_size: Tile size for tile-scan SSM implementation
+        threshold_tokens: Minimum batch*sequence tokens for auto mode to use tile-scan
         **kwargs: All other keyword arguments are ignored
     """
 
@@ -32,6 +35,9 @@ class DPASSMBlock(nn.Module):
         ssm_state_dim: int,
         dropout: float = 0.1,
         max_mask_T: int = 4096,
+        ssm_impl: str = "naive",
+        tile_size: int = 256,
+        threshold_tokens: int = 1024,
         **kwargs,
     ):
         super().__init__()
@@ -46,6 +52,9 @@ class DPASSMBlock(nn.Module):
         self.ssm_state_dim = ssm_state_dim
         self.dropout_rate = dropout
         self.max_mask_T = max_mask_T
+        self.ssm_impl = ssm_impl
+        self.tile_size = tile_size
+        self.threshold_tokens = threshold_tokens
 
         # Mask cache for performance
         self._mask_cache = {}
@@ -336,6 +345,31 @@ class DPASSMBlock(nn.Module):
             # Fallback: compute u using B(x_in) - this should not happen in normal fused flow
             u = self.B(x_in)  # (B, T, d_s)
 
+        # Choose implementation based on ssm_impl and sequence length
+        if self.ssm_impl == "naive" or T <= self.tile_size:
+            # Use naive implementation for short sequences or when explicitly requested
+            return self._compute_ssm_naive(x_in, state, u, alpha)
+        elif self.ssm_impl == "auto":
+            # Auto-select: use tile-scan if sequence is long enough and batch*seq >= threshold
+            use_tile_scan = (T >= self.tile_size) and (B * T >= self.threshold_tokens)
+            if use_tile_scan:
+                return self._compute_ssm_tile_scan(x_in, state, u, alpha)
+            else:
+                return self._compute_ssm_naive(x_in, state, u, alpha)
+        else:
+            # Use tile-scan implementation for longer sequences
+            return self._compute_ssm_tile_scan(x_in, state, u, alpha)
+
+    def _compute_ssm_naive(
+        self,
+        x_in: torch.Tensor,
+        state: torch.Tensor,
+        u: torch.Tensor,
+        alpha: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Naive SSM implementation with sequential loop."""
+        B, T, d = x_in.shape
+
         # Preallocate output tensor to avoid Python list overhead
         y_ssm = torch.empty(B, T, self.d_model, device=x_in.device, dtype=x_in.dtype)
         current_state = state
@@ -351,6 +385,127 @@ class DPASSMBlock(nn.Module):
         y_ssm = self.drop(y_ssm)
 
         return y_ssm, current_state
+
+    def _compute_ssm_tile_scan(
+        self,
+        x_in: torch.Tensor,
+        state: torch.Tensor,
+        u: torch.Tensor,
+        alpha: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Vectorized tile-scan SSM:
+          - No per-tile weight construction in Python
+          - Prefix-scan via cumprod/cumsum
+          - Batched readout C(s) (once per tile or once total)
+          - fp32 math for SSM for stability
+        """
+        B, T, _ = x_in.shape
+        d_s = self.ssm_state_dim
+        C = self.tile_size
+        device = x_in.device
+        dtype_model = x_in.dtype
+
+        # ---- fp32 math inside SSM path for stability ----
+        u32 = u.float()  # (B,T,d_s)
+        alpha32 = alpha.float()  # (d_s,)
+        s0 = state.float()  # (B,d_s)
+
+        # ---- reshape into tiles (pad if needed) ----
+        N = (T + C - 1) // C  # number of tiles
+        pad = N * C - T
+        if pad:
+            u32 = F.pad(u32, (0, 0, 0, pad))  # (B, N*C, d_s)
+
+        u_tiles = u32.view(B, N, C, d_s).contiguous()  # (B, N, C, d_s)
+
+        # ---- per-tile weights & A_tile (vectorized; cache-friendly) ----
+        # weights w[i] = alpha**(C-1-i) for full tiles in fp32
+        # build using logs (numerically friendlier)
+        idx = torch.arange(C - 1, -1, -1, device=device, dtype=torch.float32).unsqueeze(
+            -1
+        )  # (C,1)
+        loga = torch.log(alpha32.clamp_min(1e-12))  # (d_s,)
+        w_full = torch.exp(idx * loga.unsqueeze(0))  # (C, d_s) fp32
+
+        # A_tile for full tiles; handle last (short) tile separately later
+        A_full = torch.exp(C * loga)  # (d_s,)
+
+        # ---- per-tile summaries (vectorized) ----
+        # Full tiles first:
+        if N > 1 or pad == 0:
+            # Weighted sum across C: (B,N,C,d_s) * (C,d_s) -> (B,N,d_s)
+            b_tiles = (u_tiles * w_full.view(1, 1, C, d_s)).sum(dim=2)  # (B,N,d_s)
+            A_tiles = A_full.view(1, 1, d_s).expand(B, N, d_s).contiguous()  # (B,N,d_s)
+        else:
+            # N == 1 is handled below; this branch rarely triggers
+            b_tiles = (u_tiles * w_full.view(1, 1, C, d_s)).sum(dim=2)
+            A_tiles = A_full.view(1, 1, d_s).expand(B, N, d_s)
+
+        # If the last tile is short (pad>0), correct A/b for that tile length L_last
+        if pad:
+            L_last = C - pad
+            # Recompute weights for the last tile only (length L_last)
+            idx_last = torch.arange(
+                L_last - 1, -1, -1, device=device, dtype=torch.float32
+            ).unsqueeze(-1)
+            w_last = torch.exp(idx_last * loga.unsqueeze(0))  # (L_last, d_s)
+            b_last = (u_tiles[:, -1, :L_last, :] * w_last.unsqueeze(0)).sum(
+                dim=1
+            )  # (B,d_s)
+            b_tiles[:, -1, :] = b_last
+            A_last = torch.exp(L_last * loga)  # (d_s,)
+            A_tiles[:, -1, :] = A_last
+
+        # ---- prefix-scan over tiles (associative combine) ----
+        # suf[k] = prod_{j=k+1..N-1} A_tiles[j]  (elementwise)
+        suf = torch.empty_like(A_tiles)  # (B,N,d_s)
+        suf[:, -1, :] = 1.0
+        if N > 1:
+            # reverse cumprod on dim=1 then reverse back (excluding last position)
+            cumprod_result = torch.cumprod(A_tiles[:, :-1, :], dim=1)
+            suf[:, :-1, :] = torch.flip(cumprod_result, dims=[1])
+
+        # b_prefix[k] = sum_{i=0..k} b_tiles[i] * prod_{j=i+1..k} A_tiles[j]
+        b_weighted = b_tiles * suf  # (B,N,d_s)
+        b_prefix = torch.cumsum(b_weighted, dim=1)  # (B,N,d_s)
+
+        # A_prefix[k] = prod_{i=0..k} A_tiles[i]
+        A_prefix = torch.cumprod(A_tiles, dim=1)  # (B,N,d_s)
+
+        # carry-in state for each tile k:
+        # s_in[k] = A_prefix[k-1]*s0 + b_prefix[k-1], with s_in[0]=s0
+        s_in = torch.empty(B, N, d_s, device=device, dtype=torch.float32)
+        s_in[:, 0, :] = s0
+        if N > 1:
+            s_in[:, 1:, :] = (A_prefix[:, :-1, :] * s0.unsqueeze(1)) + b_prefix[
+                :, :-1, :
+            ]
+
+        # ---- materialize per-token states (short in-tile loop, but batch readout) ----
+        # We store per-step states in fp32, then do ONE matmul per tile via self.C
+        y_states = torch.empty(B, T, d_s, device=device, dtype=torch.float32)
+        for k in range(N):
+            start = k * C
+            end = min(start + C, T)
+            s_k = s_in[:, k, :]  # (B,d_s)
+            # write a temporary buffer for states in this tile to do a single matmul
+            tile_len = end - start
+            s_buf = torch.empty(B, tile_len, d_s, device=device, dtype=torch.float32)
+            for i in range(tile_len):
+                s_k = alpha32 * s_k + u32[:, start + i, :]
+                s_buf[:, i, :] = s_k
+            # single readout for the whole tile
+            y_states[:, start:end, :] = s_buf
+            # keep final state for return
+            if k == N - 1:
+                s_last = s_k
+
+        # ---- batched readout C(s) across the full sequence; cast back ----
+        # One matmul instead of T matmuls:
+        y_ssm = self.C(y_states.to(dtype_model))  # (B,T,d_model)
+        y_ssm = self.drop(y_ssm)
+        return y_ssm, s_last.to(dtype_model)
 
     def forward(
         self, x: torch.Tensor, ssm_state: torch.Tensor | None = None
