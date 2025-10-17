@@ -56,6 +56,10 @@ class DPASSMBlock(nn.Module):
         self.tile_size = tile_size
         self.threshold_tokens = threshold_tokens
 
+        # KV cache mode for streaming: "cat" (default), "ring_win", or "ring2x"
+        # Kept behind kwargs for backward compatibility
+        self.kv_cache_mode = kwargs.get("kv_cache_mode", "cat")
+
         # Mask cache for performance
         self._mask_cache = {}
 
@@ -92,6 +96,38 @@ class DPASSMBlock(nn.Module):
 
         # Attention state type alias
         self.AttnState = tuple[torch.Tensor, torch.Tensor]  # (K_cache, V_cache)
+
+    def _init_kv_buffers(
+        self, B: int, H: int, W: int, Dh: int, device: torch.device, dtype: torch.dtype
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ]:
+        """Initialize ring buffers and staging windows for ring_win mode."""
+        K_buf = torch.empty(B, H, W, Dh, device=device, dtype=dtype)
+        V_buf = torch.empty(B, H, W, Dh, device=device, dtype=dtype)
+        K_win = torch.empty(B, H, W, Dh, device=device, dtype=dtype)
+        V_win = torch.empty(B, H, W, Dh, device=device, dtype=dtype)
+        idx = torch.zeros((), dtype=torch.int64, device=device)
+        filled = torch.zeros((), dtype=torch.int64, device=device)
+        return (K_buf, V_buf, K_win, V_win, idx, filled)
+
+    def _init_kv_buffers_2x(
+        self, B: int, H: int, W: int, Dh: int, device: torch.device, dtype: torch.dtype
+    ) -> tuple[torch.Tensor, torch.Tensor, int, int]:
+        """Initialize 2W rolling write buffers for ring2x mode.
+
+        Keep write pointer and filled counters as Python ints to avoid GPU syncs.
+        """
+        K_buf = torch.empty(B, H, 2 * W, Dh, device=device, dtype=dtype)
+        V_buf = torch.empty(B, H, 2 * W, Dh, device=device, dtype=dtype)
+        wp: int = W - 1  # next write will go to wp+1
+        filled: int = 0  # logical window length, capped at W
+        return (K_buf, V_buf, wp, filled)
 
     def _get_window_mask(self, T: int, W: int, device: torch.device) -> torch.Tensor:
         """Get cached boolean window mask for SDPA.
@@ -606,8 +642,17 @@ class DPASSMBlock(nn.Module):
         self,
         x_t: torch.Tensor,
         ssm_state: torch.Tensor | None = None,
-        attn_state: tuple[torch.Tensor, torch.Tensor] | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        attn_state: tuple[torch.Tensor, torch.Tensor]
+        | tuple[torch.Tensor, torch.Tensor, int]
+        | tuple[torch.Tensor, torch.Tensor, int, int]
+        | None = None,
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        tuple[torch.Tensor, torch.Tensor]
+        | tuple[torch.Tensor, torch.Tensor, int]
+        | tuple[torch.Tensor, torch.Tensor, int, int],
+    ]:
         """
         Streaming inference step - process one token at a time with KV cache.
 
@@ -649,21 +694,136 @@ class DPASSMBlock(nn.Module):
         K_new = K.view(B, 1, self.n_heads, d_h).transpose(1, 2)
         V_new = V.view(B, 1, self.n_heads, d_h).transpose(1, 2)
 
-        # Update KV cache
-        if attn_state is None:
-            K_cache, V_cache = K_new, V_new
-        else:
-            K_cache, V_cache = attn_state
-            K_cache = torch.cat([K_cache, K_new], dim=2)[:, :, -self.window_size :, :]
-            V_cache = torch.cat([V_cache, V_new], dim=2)[:, :, -self.window_size :, :]
+        # Update/read KV cache
+        if self.kv_cache_mode == "ring2x":
+            # 2W rolling write buffer mode: attn_state is (K_buf, V_buf, wp, filled)
+            W = self.window_size
+            if attn_state is None or len(attn_state) != 4:
+                K_buf, V_buf, wp, filled = self._init_kv_buffers_2x(
+                    B, self.n_heads, W, d_h, x_t.device, x_t.dtype
+                )
+            else:
+                K_buf, V_buf, wp, filled = attn_state  # type: ignore[misc]
 
-        # Attend to cache (no future present, so no mask needed)
-        p = self.drop.p if self.training else 0.0
-        y_attn = F.scaled_dot_product_attention(
-            Q, K_cache, V_cache, attn_mask=None, dropout_p=p, is_causal=False
-        )
-        y_attn = y_attn.transpose(1, 2).contiguous().view(B, 1, d)
-        y_attn = self.drop(self.W_O(y_attn))
+            # Advance write pointer (Python int math; no .item())
+            wp += 1
+            twoW = 2 * W
+            if wp >= twoW:
+                # Bulk copy about once per W steps; no autograd
+                with torch.no_grad():
+                    K_buf[:, :, 0:W].copy_(K_buf[:, :, W:twoW])
+                    V_buf[:, :, 0:W].copy_(V_buf[:, :, W:twoW])
+                wp = W
+
+            # Write new KV (no autograd)
+            with torch.no_grad():
+                K_buf[:, :, wp] = K_new[:, :, 0]
+                V_buf[:, :, wp] = V_new[:, :, 0]
+
+            # Logical window length (Python int; no tensor creation)
+            filled = filled + 1 if filled + 1 < W else W
+            L = filled
+
+            # Contiguous slice for attention: [wp-L+1 : wp+1)
+            start = wp - (L - 1)
+            stop = wp + 1
+            K_win = K_buf[:, :, start:stop]  # (B,H,L,Dh) contiguous view
+            V_win = V_buf[:, :, start:stop]
+
+            # Call SDPA with contiguous buffers (fast path preserved)
+            p = self.drop.p if self.training else 0.0
+            y_attn = F.scaled_dot_product_attention(
+                Q, K_win, V_win, attn_mask=None, dropout_p=p, is_causal=False
+            )  # (B,H,1,Dh)
+            y_attn = y_attn.transpose(1, 2).contiguous().view(B, 1, d)
+            y_attn = self.drop(self.W_O(y_attn))
+        elif self.kv_cache_mode == "ring_win":
+            # Ring buffer with staging windows: attn_state is (K_buf, V_buf, K_win, V_win, idx, filled)
+            W = self.window_size
+            if attn_state is None:
+                # Initialize buffers on first step
+                K_buf, V_buf, K_win, V_win, idx, filled = self._init_kv_buffers(
+                    B, self.n_heads, W, d_h, x_t.device, x_t.dtype
+                )
+            else:
+                # Unpack existing buffers
+                if len(attn_state) == 2:
+                    # Backward compatibility: re-init from cat-mode state
+                    K_buf, V_buf, K_win, V_win, idx, filled = self._init_kv_buffers(
+                        B, self.n_heads, W, d_h, x_t.device, x_t.dtype
+                    )
+                elif len(attn_state) == 6:
+                    K_buf, V_buf, K_win, V_win, idx, filled = attn_state  # type: ignore[misc]
+                else:
+                    # Handle legacy 3-tuple or 4-tuple states
+                    K_buf, V_buf, K_win, V_win, idx, filled = self._init_kv_buffers(
+                        B, self.n_heads, W, d_h, x_t.device, x_t.dtype
+                    )
+
+            # Write new K/V to ring buffer (contiguous write)
+            K_buf[:, :, idx] = K_new[:, :, 0]  # K_new: (B,H,1,Dh) -> (B,H,Dh)
+            V_buf[:, :, idx] = V_new[:, :, 0]  # V_new: (B,H,1,Dh) -> (B,H,Dh)
+            filled = torch.minimum(filled + 1, torch.as_tensor(W, device=filled.device))
+
+            # Build contiguous window in staging buffers (two copy_ ops)
+            L = int(filled.item())
+            if L < W:
+                # Contiguous prefix [0:L)
+                K_win[:, :, :L].copy_(K_buf[:, :, :L])
+                V_win[:, :, :L].copy_(V_buf[:, :, :L])
+            else:
+                # Logical order oldest..newest: [idx+1..W-1] then [0..idx]
+                tail = W - 1 - int(idx.item())
+                if tail > 0:
+                    K_win[:, :, :tail].copy_(K_buf[:, :, idx + 1 : W])
+                    V_win[:, :, :tail].copy_(V_buf[:, :, idx + 1 : W])
+                head = int(idx.item()) + 1
+                if head > 0:
+                    K_win[:, :, tail : tail + head].copy_(K_buf[:, :, :head])
+                    V_win[:, :, tail : tail + head].copy_(V_buf[:, :, :head])
+                L = W  # full window
+
+            # Call SDPA with contiguous staging buffers (fast path preserved)
+            p = self.drop.p if self.training else 0.0
+            y_attn = F.scaled_dot_product_attention(
+                Q,
+                K_win[:, :, :L],
+                V_win[:, :, :L],
+                attn_mask=None,
+                dropout_p=p,
+                is_causal=False,
+            )  # (B,H,1,Dh)
+            y_attn = y_attn.transpose(1, 2).contiguous().view(B, 1, d)
+            y_attn = self.drop(self.W_O(y_attn))
+
+            # Advance ring index
+            if (W & (W - 1)) == 0:  # W is power of 2
+                idx = (idx + 1) & (W - 1)
+            else:
+                idx = (idx + 1) % W
+        else:
+            # Default cat mode (backward compatible)
+            if attn_state is None:
+                K_cache, V_cache = K_new, V_new
+            else:
+                K_cache, V_cache = attn_state  # type: ignore[assignment]
+                # Use rolling window approach to avoid full concat
+                if K_cache.size(2) >= self.window_size:
+                    # Shift left and append new token (more efficient than cat + slice)
+                    K_cache = torch.cat([K_cache[:, :, 1:, :], K_new], dim=2)
+                    V_cache = torch.cat([V_cache[:, :, 1:, :], V_new], dim=2)
+                else:
+                    # Still growing, just append
+                    K_cache = torch.cat([K_cache, K_new], dim=2)
+                    V_cache = torch.cat([V_cache, V_new], dim=2)
+
+            # Attend to cache (no future present, so no mask needed)
+            p = self.drop.p if self.training else 0.0
+            y_attn = F.scaled_dot_product_attention(
+                Q, K_cache, V_cache, attn_mask=None, dropout_p=p, is_causal=False
+            )
+            y_attn = y_attn.transpose(1, 2).contiguous().view(B, 1, d)
+            y_attn = self.drop(self.W_O(y_attn))
 
         # SSM update using pre-computed u
         if ssm_state is None:
@@ -688,4 +848,11 @@ class DPASSMBlock(nn.Module):
         mlp_out = self.mlp(x_norm2)  # (B, 1, d)
         x_final = x_out + self.drop(mlp_out)  # (B, 1, d)
 
-        return x_final, current_state, (K_cache, V_cache)
+        if self.kv_cache_mode == "ring2x":
+            # Return 2W rolling buffers and updated state
+            return x_final, current_state, (K_buf, V_buf, wp, filled)
+        elif self.kv_cache_mode == "ring_win":
+            # Return ring buffers, staging windows, and updated state
+            return x_final, current_state, (K_buf, V_buf, K_win, V_win, idx, filled)
+        else:
+            return x_final, current_state, (K_cache, V_cache)
