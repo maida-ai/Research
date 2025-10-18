@@ -11,6 +11,8 @@ import torch.nn.functional as F
 
 from efficient_longctx.utils.constants import FLASH_ATTN_AVAILABLE
 
+from ..utils.gqa_kernels import gqa_attention
+
 # Import FlashAttention if available
 if FLASH_ATTN_AVAILABLE:
     from flash_attn import flash_attn_func
@@ -43,12 +45,24 @@ class BLADEBlock(nn.Module):
         state_dim: int,
         m_global: int = 0,
         dropout: float = 0.1,
+        num_kv_heads: int | None = None,
         **kwargs,
     ):
         super().__init__()
 
+        # GQA setup: default to n_heads for backward compatibility
+        if num_kv_heads is None:
+            num_kv_heads = n_heads
+
+        # Validate GQA parameters
+        if num_kv_heads > n_heads:
+            raise ValueError("num_kv_heads cannot be greater than n_heads")
+        if n_heads % num_kv_heads != 0:
+            raise ValueError("n_heads must be divisible by num_kv_heads for GQA")
+
         self.d_model = d_model
         self.n_heads = n_heads
+        self.num_kv_heads = num_kv_heads
         self.chunk_size = chunk_size
         self.state_dim = state_dim
         self.m_global = m_global
@@ -74,8 +88,10 @@ class BLADEBlock(nn.Module):
 
         # Attention projections
         self.q_proj = nn.Linear(d_model, d_model, bias=False)
-        self.k_proj = nn.Linear(d_model, d_model, bias=False)
-        self.v_proj = nn.Linear(d_model, d_model, bias=False)
+        # GQA: K/V projections use num_kv_heads instead of n_heads
+        kv_dim = self.num_kv_heads * self.head_dim
+        self.k_proj = nn.Linear(d_model, kv_dim, bias=False)
+        self.v_proj = nn.Linear(d_model, kv_dim, bias=False)
         self.out_proj = nn.Linear(d_model, d_model)
 
         # Layer normalization for stackable design
@@ -115,8 +131,14 @@ class BLADEBlock(nn.Module):
         H, Dh = self.n_heads, self.head_dim
 
         q = self.q_proj(x).view(B, T, H, Dh).transpose(1, 2)  # [B,H,T,Dh]
-        k = self.k_proj(x).view(B, T, H, Dh).transpose(1, 2)
-        v = self.v_proj(x).view(B, T, H, Dh).transpose(1, 2)
+
+        # GQA: K and V have fewer heads
+        k = (
+            self.k_proj(x).view(B, T, self.num_kv_heads, Dh).transpose(1, 2)
+        )  # [B,Hkv,T,Dh]
+        v = (
+            self.v_proj(x).view(B, T, self.num_kv_heads, Dh).transpose(1, 2)
+        )  # [B,Hkv,T,Dh]
 
         # Set dropout based on training mode (SDPA applies dropout even in eval if > 0)
         dropout_p = self.dropout.p if self.training else 0.0
@@ -124,9 +146,13 @@ class BLADEBlock(nn.Module):
         # Try modern PyTorch SDPA first (recommended primary path)
         try:
             if window_size is None:
-                # Pure causal attention - use is_causal=True
-                o = F.scaled_dot_product_attention(
-                    q, k, v, attn_mask=None, dropout_p=dropout_p, is_causal=True
+                # Pure causal attention - use GQA-aware computation
+                o = gqa_attention(
+                    Q=q,
+                    K=k,
+                    V=v,
+                    dropout_p=dropout_p,
+                    is_causal=True,
                 )
             else:
                 # Windowed + causal attention - build boolean mask
@@ -145,10 +171,10 @@ class BLADEBlock(nn.Module):
                     attn_mask = band.unsqueeze(0).unsqueeze(0)  # [1, 1, T, T]
                     self._mask_cache[key] = attn_mask
 
-                o = F.scaled_dot_product_attention(
-                    q,
-                    k,
-                    v,
+                o = gqa_attention(
+                    Q=q,
+                    K=k,
+                    V=v,
                     attn_mask=attn_mask,
                     dropout_p=dropout_p,
                     is_causal=False,  # Must be False when using attn_mask

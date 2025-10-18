@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ..utils.gqa_kernels import gqa_attention
+
 # Enable TF32 for better performance on Ampere/Hopper GPUs
 torch.set_float32_matmul_precision("medium")
 
@@ -24,6 +26,9 @@ class DPASSMBlock(nn.Module):
         ssm_impl: SSM implementation ("naive", "tile_scan", or "auto")
         tile_size: Tile size for tile-scan SSM implementation
         threshold_tokens: Minimum batch*sequence tokens for auto mode to use tile-scan
+        num_kv_heads: Number of key/value heads for Grouped Query Attention (GQA).
+                      Defaults to n_heads (standard attention). When < n_heads,
+                      K/V are shared across query head groups for efficiency.
         **kwargs: All other keyword arguments are ignored
     """
 
@@ -38,6 +43,7 @@ class DPASSMBlock(nn.Module):
         ssm_impl: str = "naive",
         tile_size: int = 256,
         threshold_tokens: int = 1024,
+        num_kv_heads: int | None = None,
         **kwargs,
     ):
         super().__init__()
@@ -46,8 +52,19 @@ class DPASSMBlock(nn.Module):
         if d_model % n_heads != 0:
             raise ValueError("d_model must be divisible by n_heads")
 
+        # GQA setup: default to n_heads for backward compatibility
+        if num_kv_heads is None:
+            num_kv_heads = n_heads
+
+        # Validate GQA parameters
+        if num_kv_heads > n_heads:
+            raise ValueError("num_kv_heads cannot be greater than n_heads")
+        if n_heads % num_kv_heads != 0:
+            raise ValueError("n_heads must be divisible by num_kv_heads for GQA")
+
         self.d_model = d_model
         self.n_heads = n_heads
+        self.num_kv_heads = num_kv_heads
         self.window_size = window_size
         self.ssm_state_dim = ssm_state_dim
         self.dropout_rate = dropout
@@ -70,7 +87,9 @@ class DPASSMBlock(nn.Module):
         # Split projections with CUDA stream overlap for better performance
         # W_qkv: QKV projections (bias=False for better cublasLt algo selection)
         # W_ug: SSM input + gate projections (bias=True for gate initialization)
-        self.W_qkv = nn.Linear(d_model, 3 * d_model, bias=False)
+        # GQA: K/V projections use num_kv_heads instead of n_heads
+        kv_dim = self.num_kv_heads * (d_model // n_heads)
+        self.W_qkv = nn.Linear(d_model, d_model + 2 * kv_dim, bias=False)
         self.W_ug = nn.Linear(d_model, ssm_state_dim + d_model, bias=True)
         self.W_O = nn.Linear(d_model, d_model)
 
@@ -170,19 +189,22 @@ class DPASSMBlock(nn.Module):
         d_h = d // self.n_heads
 
         # Split projections for attention computation
-        qkv = self.W_qkv(x)  # (B, T, 3*d)
-        Q, K, V = qkv.split(d, dim=-1)  # Each: (B, T, d)
+        qkv = self.W_qkv(x)  # (B, T, d + 2*kv_dim)
+        kv_dim = self.num_kv_heads * d_h
+        Q, K, V = qkv.split(
+            [d, kv_dim, kv_dim], dim=-1
+        )  # Q: (B, T, d), K/V: (B, T, kv_dim)
 
-        # Reshape Q, K, V for attention
+        # Reshape Q, K, V for GQA attention
         Q = (
             Q.view(B, T, self.n_heads, d_h).transpose(1, 2).contiguous()
-        )  # (B, h, T, d_h)
+        )  # (B, Hq, T, Dh)
         K = (
-            K.view(B, T, self.n_heads, d_h).transpose(1, 2).contiguous()
-        )  # (B, h, T, d_h)
+            K.view(B, T, self.num_kv_heads, d_h).transpose(1, 2).contiguous()
+        )  # (B, Hkv, T, Dh)
         V = (
-            V.view(B, T, self.n_heads, d_h).transpose(1, 2).contiguous()
-        )  # (B, h, T, d_h)
+            V.view(B, T, self.num_kv_heads, d_h).transpose(1, 2).contiguous()
+        )  # (B, Hkv, T, Dh)
 
         # Use cached bool mask and causal fast-path
         if self.window_size >= T:
@@ -197,9 +219,14 @@ class DPASSMBlock(nn.Module):
         # Use single source of truth for dropout
         p = self.drop.p if self.training else 0.0
 
-        # Use PyTorch's optimized scaled_dot_product_attention
-        attention_output = F.scaled_dot_product_attention(
-            Q, K, V, attn_mask=attn_mask, dropout_p=p, is_causal=is_causal
+        # Use GQA-aware attention computation (no materialization)
+        attention_output = gqa_attention(
+            Q=Q,
+            K=K,
+            V=V,
+            attn_mask=attn_mask,
+            dropout_p=p,
+            is_causal=is_causal,
         )
 
         # Reshape back to (B, T, d)
@@ -229,16 +256,16 @@ class DPASSMBlock(nn.Module):
         B, T, d = x.shape
         d_h = d // self.n_heads
 
-        # Reshape Q, K, V for attention
+        # Reshape Q, K, V for GQA attention
         Q = (
             Q.view(B, T, self.n_heads, d_h).transpose(1, 2).contiguous()
-        )  # (B, h, T, d_h)
+        )  # (B, Hq, T, Dh)
         K = (
-            K.view(B, T, self.n_heads, d_h).transpose(1, 2).contiguous()
-        )  # (B, h, T, d_h)
+            K.view(B, T, self.num_kv_heads, d_h).transpose(1, 2).contiguous()
+        )  # (B, Hkv, T, Dh)
         V = (
-            V.view(B, T, self.n_heads, d_h).transpose(1, 2).contiguous()
-        )  # (B, h, T, d_h)
+            V.view(B, T, self.num_kv_heads, d_h).transpose(1, 2).contiguous()
+        )  # (B, Hkv, T, Dh)
 
         # Use cached bool mask and causal fast-path
         if self.window_size >= T:
@@ -253,9 +280,14 @@ class DPASSMBlock(nn.Module):
         # Use single source of truth for dropout
         p = self.drop.p if self.training else 0.0
 
-        # Use PyTorch's optimized scaled_dot_product_attention
-        attention_output = F.scaled_dot_product_attention(
-            Q, K, V, attn_mask=attn_mask, dropout_p=p, is_causal=is_causal
+        # Use GQA-aware attention computation (no materialization)
+        attention_output = gqa_attention(
+            Q=Q,
+            K=K,
+            V=V,
+            attn_mask=attn_mask,
+            dropout_p=p,
+            is_causal=is_causal,
         )
 
         # Reshape back to (B, T, d)
@@ -278,15 +310,15 @@ class DPASSMBlock(nn.Module):
         T×T attention mask for large sequences.
 
         Args:
-            Q: Query tensor of shape (B, h, T, d_h)
-            K: Key tensor of shape (B, h, T, d_h)
-            V: Value tensor of shape (B, h, T, d_h)
+            Q: Query tensor of shape (B, Hq, T, d_h)
+            K: Key tensor of shape (B, Hkv, T, d_h) - fewer heads for GQA
+            V: Value tensor of shape (B, Hkv, T, d_h) - fewer heads for GQA
             device: Device for tensor operations
 
         Returns:
             Attention output tensor of shape (B, T, d_model)
         """
-        B, h, T, d_h = Q.shape
+        B, Hq, T, d_h = Q.shape
         W = self.window_size
 
         # Use single source of truth for dropout
@@ -302,9 +334,9 @@ class DPASSMBlock(nn.Module):
             # Keys/values span [max(0,t1-W), t1)
             ks = max(0, t1 - W)
 
-            Qb = Q[:, :, t0:t1, :]  # (B, h, BS, d_h)
-            Kb = K[:, :, ks:t1, :]  # (B, h, KB, d_h)
-            Vb = V[:, :, ks:t1, :]
+            Qb = Q[:, :, t0:t1, :]  # (B, Hq, BS, d_h)
+            Kb = K[:, :, ks:t1, :]  # (B, Hkv, KB, d_h)
+            Vb = V[:, :, ks:t1, :]  # (B, Hkv, KB, d_h)
 
             # Build a small causal mask inside the block:
             # target positions are t0..t1-1, allowed keys <= each position
@@ -320,13 +352,19 @@ class DPASSMBlock(nn.Module):
             band = j <= (i + shift)
             mask_b = band.view(1, 1, Tb, Kb_len)
 
-            out_b = F.scaled_dot_product_attention(
-                Qb, Kb, Vb, attn_mask=mask_b, dropout_p=p, is_causal=False
+            # Use GQA-aware attention computation for this block
+            out_b = gqa_attention(
+                Q=Qb,
+                K=Kb,
+                V=Vb,
+                attn_mask=mask_b,
+                dropout_p=p,
+                is_causal=False,
             )
             out_chunks.append(out_b)
 
         # Concatenate all blocks
-        out = torch.cat(out_chunks, dim=2)  # (B, h, T, d_h)
+        out = torch.cat(out_chunks, dim=2)  # (B, Hq, T, d_h)
 
         # Reshape back to (B, T, d)
         attention_output = out.transpose(1, 2).contiguous().view(B, T, self.d_model)
@@ -592,7 +630,10 @@ class DPASSMBlock(nn.Module):
             ug = self.W_ug(x_norm1)
 
         # Split outputs
-        Q, K, V = qkv.split(d, dim=-1)  # Each: (B, T, d)
+        kv_dim = self.num_kv_heads * (d // self.n_heads)
+        Q, K, V = qkv.split(
+            [d, kv_dim, kv_dim], dim=-1
+        )  # Q: (B, T, d), K/V: (B, T, kv_dim)
         u, gate_pre = ug.split(
             [self.ssm_state_dim, d], dim=-1
         )  # u: (B, T, ssm_state_dim), gate_pre: (B, T, d)

@@ -8,9 +8,10 @@ import random
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from efficient_longctx.utils.constants import FLASH_ATTN_AVAILABLE
+
+from ..utils.gqa_kernels import gqa_attention
 
 # Import FlashAttention if available
 if FLASH_ATTN_AVAILABLE:
@@ -45,12 +46,24 @@ class BigBirdBlock(nn.Module):
         n_random_tokens: int = 4,
         n_global_tokens: int = 2,
         dropout: float = 0.1,
+        num_kv_heads: int | None = None,
         **kwargs,
     ):
         super().__init__()
 
+        # GQA setup: default to n_heads for backward compatibility
+        if num_kv_heads is None:
+            num_kv_heads = n_heads
+
+        # Validate GQA parameters
+        if num_kv_heads > n_heads:
+            raise ValueError("num_kv_heads cannot be greater than n_heads")
+        if n_heads % num_kv_heads != 0:
+            raise ValueError("n_heads must be divisible by num_kv_heads for GQA")
+
         self.d_model = d_model
         self.n_heads = n_heads
+        self.num_kv_heads = num_kv_heads
         self.window_size = window_size
         self.n_random_tokens = n_random_tokens
         self.n_global_tokens = n_global_tokens
@@ -63,8 +76,10 @@ class BigBirdBlock(nn.Module):
 
         # QKV projections
         self.q_proj = nn.Linear(d_model, d_model, bias=False)
-        self.k_proj = nn.Linear(d_model, d_model, bias=False)
-        self.v_proj = nn.Linear(d_model, d_model, bias=False)
+        # GQA: K/V projections use num_kv_heads instead of n_heads
+        kv_dim = self.num_kv_heads * self.head_dim
+        self.k_proj = nn.Linear(d_model, kv_dim, bias=False)
+        self.v_proj = nn.Linear(d_model, kv_dim, bias=False)
         self.out_proj = nn.Linear(d_model, d_model)
 
         # Feed-forward network
@@ -95,21 +110,25 @@ class BigBirdBlock(nn.Module):
         # Pre-LN
         h = self.ln1(x)
 
-        # Compute QKV
-        q = self.q_proj(h).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
-        k = self.k_proj(h).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
-        v = self.v_proj(h).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+        # Compute QKV with proper GQA dimensions
+        q = (
+            self.q_proj(h).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+        )  # (B, Hq, T, Dh)
+        k = (
+            self.k_proj(h).view(B, T, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        )  # (B, Hkv, T, Dh)
+        v = (
+            self.v_proj(h).view(B, T, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        )  # (B, Hkv, T, Dh)
 
         # Create attention mask for local + random + global attention
         attn_mask = self._create_attention_mask(T, x.device)
 
-        # Apply attention
-        # Note: FlashAttention doesn't support arbitrary attention masks,
-        # so we always use PyTorch SDPA for baseline blocks
-        attn_out = F.scaled_dot_product_attention(
-            q,
-            k,
-            v,
+        # Use GQA-aware attention computation (no materialization)
+        attn_out = gqa_attention(
+            Q=q,
+            K=k,
+            V=v,
             attn_mask=attn_mask,
             dropout_p=self.dropout_rate if self.training else 0.0,
             is_causal=False,  # We handle causality in the mask
