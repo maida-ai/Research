@@ -15,6 +15,7 @@ from lightning import LightningModule
 
 import efficient_longctx
 from efficient_longctx.training.data import setup_tokenizer
+from efficient_longctx.utils.gqa_kernels import gqa_attention
 
 
 def get_config_params(num_params: int | str | None = None) -> dict[str, Any]:
@@ -44,16 +45,31 @@ class VanillaAttentionBlock(nn.Module):
         d_model: int,
         n_heads: int,
         dropout: float = 0.1,
+        num_kv_heads: int | None = None,
         **kwargs: Any,
     ):
         super().__init__()
+
+        # GQA setup: default to n_heads for backward compatibility
+        if num_kv_heads is None:
+            num_kv_heads = n_heads
+
+        # Validate GQA parameters
+        if num_kv_heads > n_heads:
+            raise ValueError("num_kv_heads cannot be greater than n_heads")
+        if n_heads % num_kv_heads != 0:
+            raise ValueError("n_heads must be divisible by num_kv_heads for GQA")
+
         self.d_model = d_model
         self.n_heads = n_heads
+        self.num_kv_heads = num_kv_heads
         self.head_dim = d_model // n_heads
 
         self.q_proj = nn.Linear(d_model, d_model, bias=False)
-        self.k_proj = nn.Linear(d_model, d_model, bias=False)
-        self.v_proj = nn.Linear(d_model, d_model, bias=False)
+        # GQA: K/V projections use num_kv_heads instead of n_heads
+        kv_dim = self.num_kv_heads * self.head_dim
+        self.k_proj = nn.Linear(d_model, kv_dim, bias=False)
+        self.v_proj = nn.Linear(d_model, kv_dim, bias=False)
         self.out_proj = nn.Linear(d_model, d_model)
 
         self.ln1 = nn.LayerNorm(d_model)
@@ -74,15 +90,25 @@ class VanillaAttentionBlock(nn.Module):
         # Pre-LN
         h = self.ln1(x)
 
-        # Attention
-        q = self.q_proj(h).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
-        k = self.k_proj(h).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
-        v = self.v_proj(h).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+        # Attention with proper GQA implementation
+        q = (
+            self.q_proj(h).view(B, T, self.n_heads, self.head_dim).transpose(1, 2)
+        )  # (B, Hq, T, Dh)
+        k = (
+            self.k_proj(h).view(B, T, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        )  # (B, Hkv, T, Dh)
+        v = (
+            self.v_proj(h).view(B, T, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        )  # (B, Hkv, T, Dh)
 
-        # Use PyTorch's optimized SDPA
+        # Use GQA-aware attention computation (no materialization)
         dropout_p = self.dropout.p if self.training else 0.0
-        attn_out = F.scaled_dot_product_attention(
-            q, k, v, attn_mask=None, dropout_p=dropout_p, is_causal=True
+        attn_out = gqa_attention(
+            Q=q,
+            K=k,
+            V=v,
+            dropout_p=dropout_p,
+            is_causal=True,
         )
 
         attn_out = attn_out.transpose(1, 2).contiguous().view(B, T, D)
