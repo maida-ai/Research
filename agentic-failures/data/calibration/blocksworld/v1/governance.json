@@ -1,0 +1,26 @@
+{
+  "solver": "bfs_bounded_v1",
+  "solver_version": "bfs_bounded_v1",
+  "solver_justification": "BFS was chosen over CP-SAT for this parameter regime (N<=8 blocks, 2-3 stacks, 0-2 buffers). The bounded state space is empirically <50k states for these parameters; BFS is complete, transparent, and requires no constraint encoding. CP-SAT would be preferred for N>10 or arbitrary non-ordering constraints. The expansion cap (200k) provides a hard deterministic safety valve.",
+  "expansion_cap_primary": 200000,
+  "time_limit_backstop_s": 10.0,
+  "hardware_class": "CPU/x86_64",
+  "os": "Linux",
+  "python_version": "3.12.3",
+  "seed": 42,
+  "calibration_wall_time_s": 0.0,
+  "solver_cache_size": 68,
+  "pipeline_order": "generate -> siblings -> pad -> calibrate (enforced)",
+  "band_targets": {
+    "easy_feasible": 6,
+    "medium_feasible": 9,
+    "hard_feasible": 12,
+    "near_boundary_feasible": 15,
+    "minimally_unsat": 12,
+    "obviously_unsat": 6
+  },
+  "band_tolerance": 1,
+  "reproduce_command": ".venv/bin/python experiments/exp1_pipeline_proof/run_all.py --seed 42",
+  "domain": "blocksworld_v1",
+  "n_instances": 60
+}

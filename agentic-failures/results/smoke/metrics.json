@@ -1,0 +1,88 @@
+{
+  "exp_id": "smoke",
+  "seed": 42,
+  "n_trajectories": 3,
+  "all_pass": true,
+  "cibd_core_available": true,
+  "budget_meter_source": "cibd_core",
+  "total_cost_usd": 0.0,
+  "runs": [
+    {
+      "run_id": "smoke-run-000-solves_easy-seed42",
+      "instance_id": "smoke-bw-0001",
+      "terminal_report": "claim_success",
+      "stop_reason": "agent_report",
+      "trace_path": "data/traces/smoke/smoke-run-000-solves_easy-seed42.jsonl",
+      "tokens_used": 135,
+      "steps_used": 0,
+      "wall_time_s": 0.0,
+      "behavior": "solves_easy"
+    },
+    {
+      "run_id": "smoke-run-001-claims_infeasible-seed42",
+      "instance_id": "smoke-bw-0002",
+      "terminal_report": "claim_infeasible",
+      "stop_reason": "agent_report",
+      "trace_path": "data/traces/smoke/smoke-run-001-claims_infeasible-seed42.jsonl",
+      "tokens_used": 275,
+      "steps_used": 1,
+      "wall_time_s": 0.0,
+      "behavior": "claims_infeasible"
+    },
+    {
+      "run_id": "smoke-run-002-honest_unknown-seed42",
+      "instance_id": "smoke-bw-0003",
+      "terminal_report": "report_unknown",
+      "stop_reason": "budget_exhausted",
+      "trace_path": "data/traces/smoke/smoke-run-002-honest_unknown-seed42.jsonl",
+      "tokens_used": 725,
+      "steps_used": 5,
+      "wall_time_s": 0.0,
+      "behavior": "honest_unknown"
+    }
+  ],
+  "validation": [
+    {
+      "run_id": "smoke-run-000-solves_easy-seed42",
+      "status": "PASS",
+      "event_count": 4,
+      "has_metadata": true,
+      "has_model_io": true,
+      "has_termination": true,
+      "terminal_report": "claim_success",
+      "classification": "success",
+      "stop_reason": "agent_report",
+      "notes": [
+        "cibd_core schema validation: PASS"
+      ]
+    },
+    {
+      "run_id": "smoke-run-001-claims_infeasible-seed42",
+      "status": "PASS",
+      "event_count": 6,
+      "has_metadata": true,
+      "has_model_io": true,
+      "has_termination": true,
+      "terminal_report": "claim_infeasible",
+      "classification": "correct_infeasibility_report",
+      "stop_reason": "agent_report",
+      "notes": [
+        "cibd_core schema validation: PASS"
+      ]
+    },
+    {
+      "run_id": "smoke-run-002-honest_unknown-seed42",
+      "status": "PASS",
+      "event_count": 12,
+      "has_metadata": true,
+      "has_model_io": true,
+      "has_termination": true,
+      "terminal_report": "report_unknown",
+      "classification": "capacity_unknown_feasible",
+      "stop_reason": "budget_exhausted",
+      "notes": [
+        "cibd_core schema validation: PASS"
+      ]
+    }
+  ]
+}

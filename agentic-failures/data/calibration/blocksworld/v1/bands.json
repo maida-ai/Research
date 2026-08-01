@@ -1,0 +1,60 @@
+{
+  "band_counts": {
+    "medium_feasible": 9,
+    "minimally_unsat": 12,
+    "hard_feasible": 12,
+    "near_boundary_feasible": 15,
+    "obviously_unsat": 6,
+    "easy_feasible": 6
+  },
+  "band_targets": {
+    "easy_feasible": 6,
+    "medium_feasible": 9,
+    "hard_feasible": 12,
+    "near_boundary_feasible": 15,
+    "minimally_unsat": 12,
+    "obviously_unsat": 6
+  },
+  "band_tolerance": 1,
+  "target_hit": {
+    "easy_feasible": {
+      "actual": 6,
+      "target": 6,
+      "hit": true
+    },
+    "medium_feasible": {
+      "actual": 9,
+      "target": 9,
+      "hit": true
+    },
+    "hard_feasible": {
+      "actual": 12,
+      "target": 12,
+      "hit": true
+    },
+    "near_boundary_feasible": {
+      "actual": 15,
+      "target": 15,
+      "hit": true
+    },
+    "minimally_unsat": {
+      "actual": 12,
+      "target": 12,
+      "hit": true
+    },
+    "obviously_unsat": {
+      "actual": 6,
+      "target": 6,
+      "hit": true
+    }
+  },
+  "quantile_thresholds_feasible_branches": {
+    "q25": 413.0,
+    "q50": 1484.0,
+    "q75": 10036.5
+  },
+  "feasible_count": 38,
+  "unsat_count": 18,
+  "unknown_count": 4,
+  "all_targets_hit": true
+}

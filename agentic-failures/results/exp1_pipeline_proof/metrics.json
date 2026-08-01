@@ -1,0 +1,158 @@
+{
+  "experiment": "exp1_pipeline_proof",
+  "seed": 42,
+  "reproduce_command": ".venv/bin/python experiments/exp1_pipeline_proof/run_all.py --seed 42",
+  "n_instances": 60,
+  "band_distribution": {
+    "medium_feasible": 9,
+    "minimally_unsat": 12,
+    "hard_feasible": 12,
+    "near_boundary_feasible": 15,
+    "obviously_unsat": 6,
+    "easy_feasible": 6
+  },
+  "band_targets": {
+    "easy_feasible": 6,
+    "medium_feasible": 9,
+    "hard_feasible": 12,
+    "near_boundary_feasible": 15,
+    "minimally_unsat": 12,
+    "obviously_unsat": 6
+  },
+  "band_target_hits": {
+    "easy_feasible": {
+      "actual": 6,
+      "target": 6,
+      "hit": true
+    },
+    "medium_feasible": {
+      "actual": 9,
+      "target": 9,
+      "hit": true
+    },
+    "hard_feasible": {
+      "actual": 12,
+      "target": 12,
+      "hit": true
+    },
+    "near_boundary_feasible": {
+      "actual": 15,
+      "target": 15,
+      "hit": true
+    },
+    "minimally_unsat": {
+      "actual": 12,
+      "target": 12,
+      "hit": true
+    },
+    "obviously_unsat": {
+      "actual": 6,
+      "target": 6,
+      "hit": true
+    }
+  },
+  "all_band_targets_hit": true,
+  "sibling_matching_violations": 0,
+  "baseline_outcomes_by_band": {
+    "capped_solver": {
+      "medium_feasible": {
+        "claim_success": 0,
+        "claim_infeasible": 0,
+        "report_unknown": 9
+      },
+      "minimally_unsat": {
+        "claim_success": 0,
+        "claim_infeasible": 0,
+        "report_unknown": 12
+      },
+      "hard_feasible": {
+        "claim_success": 0,
+        "claim_infeasible": 0,
+        "report_unknown": 12
+      },
+      "near_boundary_feasible": {
+        "claim_success": 0,
+        "claim_infeasible": 0,
+        "report_unknown": 15
+      },
+      "obviously_unsat": {
+        "claim_success": 0,
+        "claim_infeasible": 0,
+        "report_unknown": 6
+      },
+      "easy_feasible": {
+        "claim_success": 0,
+        "claim_infeasible": 0,
+        "report_unknown": 6
+      }
+    },
+    "scripted_search": {
+      "medium_feasible": {
+        "claim_success": 9,
+        "claim_infeasible": 0,
+        "report_unknown": 0
+      },
+      "minimally_unsat": {
+        "claim_success": 0,
+        "claim_infeasible": 0,
+        "report_unknown": 12
+      },
+      "hard_feasible": {
+        "claim_success": 11,
+        "claim_infeasible": 0,
+        "report_unknown": 1
+      },
+      "near_boundary_feasible": {
+        "claim_success": 10,
+        "claim_infeasible": 0,
+        "report_unknown": 5
+      },
+      "obviously_unsat": {
+        "claim_success": 0,
+        "claim_infeasible": 0,
+        "report_unknown": 6
+      },
+      "easy_feasible": {
+        "claim_success": 6,
+        "claim_infeasible": 0,
+        "report_unknown": 0
+      }
+    }
+  },
+  "baseline_totals": {
+    "capped_solver": {
+      "claim_success": 0,
+      "claim_infeasible": 0,
+      "report_unknown": 60
+    },
+    "scripted_search": {
+      "claim_success": 36,
+      "claim_infeasible": 0,
+      "report_unknown": 24
+    }
+  },
+  "solver_effort_quantiles": {
+    "feasible_instances": {
+      "min": 0,
+      "q25": 413.0,
+      "median": 1484.0,
+      "q75": 10036.5,
+      "q90": 45025.00000000001,
+      "max": 161279
+    },
+    "unsat_instances": {
+      "min": 0,
+      "q25": 0.0,
+      "median": 0.0,
+      "q75": 0.0,
+      "q90": 0.0,
+      "max": 0
+    }
+  },
+  "pipeline_wall_time_s": 3.56,
+  "calibration_wall_time_s": 0.0,
+  "solver_version": "bfs_bounded_v1",
+  "solver_time_limit_per_instance_s": 10.0,
+  "solver_expansion_cap": 200000,
+  "solver_cache_final_size": 68
+}

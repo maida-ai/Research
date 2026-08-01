@@ -1,0 +1,24 @@
+{
+  "_comment": "Placeholder pricing table. Fill in actual prices before any live API run. Units: USD per token.",
+  "_source": "https://www.anthropic.com/pricing — check current pricing before use.",
+  "claude-3-5-haiku-20241022": {
+    "input": 0.0,
+    "output": 0.0,
+    "cached_input": 0.0
+  },
+  "claude-3-5-sonnet-20241022": {
+    "input": 0.0,
+    "output": 0.0,
+    "cached_input": 0.0
+  },
+  "claude-sonnet-4-5": {
+    "input": 0.0,
+    "output": 0.0,
+    "cached_input": 0.0
+  },
+  "qwen2.5-7b-instruct@unpinned": {
+    "input": 0.0,
+    "output": 0.0,
+    "cached_input": 0.0
+  }
+}

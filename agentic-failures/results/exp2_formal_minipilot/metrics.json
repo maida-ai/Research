@@ -1,0 +1,96 @@
+{
+  "exp_id": "exp2_formal_minipilot",
+  "dry_run": true,
+  "seeds": [
+    42
+  ],
+  "model_ids": [
+    "claude-sonnet-4-5",
+    "qwen2.5-7b-instruct"
+  ],
+  "architectures": [
+    "baseline",
+    "verifier_augmented"
+  ],
+  "n_trajectories": 6,
+  "runs": [
+    {
+      "run_id": "exp2_formal_minipilot-exp2-dry-0001-baseline-mock-model-v1-seed42",
+      "instance_id": "exp2-dry-0001",
+      "terminal_report": "claim_success",
+      "stop_reason": "agent_report",
+      "trace_path": "data/traces/exp2_formal_minipilot/exp2_formal_minipilot-exp2-dry-0001-baseline-mock-model-v1-seed42.jsonl",
+      "tokens_used": 135,
+      "steps_used": 0,
+      "wall_time_s": 0.0,
+      "architecture": "baseline",
+      "model_id": "mock-model-v1",
+      "seed": 42
+    },
+    {
+      "run_id": "exp2_formal_minipilot-exp2-dry-0002-baseline-mock-model-v1-seed42",
+      "instance_id": "exp2-dry-0002",
+      "terminal_report": "claim_success",
+      "stop_reason": "agent_report",
+      "trace_path": "data/traces/exp2_formal_minipilot/exp2_formal_minipilot-exp2-dry-0002-baseline-mock-model-v1-seed42.jsonl",
+      "tokens_used": 135,
+      "steps_used": 0,
+      "wall_time_s": 0.0,
+      "architecture": "baseline",
+      "model_id": "mock-model-v1",
+      "seed": 42
+    },
+    {
+      "run_id": "exp2_formal_minipilot-exp2-dry-0003-baseline-mock-model-v1-seed42",
+      "instance_id": "exp2-dry-0003",
+      "terminal_report": "report_unknown",
+      "stop_reason": "budget_exhausted",
+      "trace_path": "data/traces/exp2_formal_minipilot/exp2_formal_minipilot-exp2-dry-0003-baseline-mock-model-v1-seed42.jsonl",
+      "tokens_used": 1560,
+      "steps_used": 10,
+      "wall_time_s": 0.0,
+      "architecture": "baseline",
+      "model_id": "mock-model-v1",
+      "seed": 42
+    },
+    {
+      "run_id": "exp2_formal_minipilot-exp2-dry-0001-verifier_augmented-mock-model-v1-seed42",
+      "instance_id": "exp2-dry-0001",
+      "terminal_report": "report_unknown",
+      "stop_reason": "budget_exhausted",
+      "trace_path": "data/traces/exp2_formal_minipilot/exp2_formal_minipilot-exp2-dry-0001-verifier_augmented-mock-model-v1-seed42.jsonl",
+      "tokens_used": 1560,
+      "steps_used": 10,
+      "wall_time_s": 0.0,
+      "architecture": "verifier_augmented",
+      "model_id": "mock-model-v1",
+      "seed": 42
+    },
+    {
+      "run_id": "exp2_formal_minipilot-exp2-dry-0002-verifier_augmented-mock-model-v1-seed42",
+      "instance_id": "exp2-dry-0002",
+      "terminal_report": "claim_success",
+      "stop_reason": "agent_report",
+      "trace_path": "data/traces/exp2_formal_minipilot/exp2_formal_minipilot-exp2-dry-0002-verifier_augmented-mock-model-v1-seed42.jsonl",
+      "tokens_used": 135,
+      "steps_used": 0,
+      "wall_time_s": 0.0,
+      "architecture": "verifier_augmented",
+      "model_id": "mock-model-v1",
+      "seed": 42
+    },
+    {
+      "run_id": "exp2_formal_minipilot-exp2-dry-0003-verifier_augmented-mock-model-v1-seed42",
+      "instance_id": "exp2-dry-0003",
+      "terminal_report": "claim_infeasible",
+      "stop_reason": "agent_report",
+      "trace_path": "data/traces/exp2_formal_minipilot/exp2_formal_minipilot-exp2-dry-0003-verifier_augmented-mock-model-v1-seed42.jsonl",
+      "tokens_used": 275,
+      "steps_used": 1,
+      "wall_time_s": 0.0,
+      "architecture": "verifier_augmented",
+      "model_id": "mock-model-v1",
+      "seed": 42
+    }
+  ]
+}

@@ -1,0 +1,215 @@
+{
+  "verdict": "PASS",
+  "mock_mode": true,
+  "seed": 42,
+  "n_bins": 7,
+  "n_instances_per_bin": 2,
+  "min_failure_rate": 0.0,
+  "max_failure_rate": 1.0,
+  "span": 1.0,
+  "required_min": 0.1,
+  "required_max": 0.9,
+  "span_ok": true,
+  "all_failure_rates": [
+    0.0,
+    0.0,
+    0.5,
+    0.0,
+    0.0,
+    1.0,
+    1.0
+  ],
+  "bins": [
+    {
+      "bin_label": "n_blocks=2_buf=2_feas",
+      "n_blocks": 2,
+      "n_buffers": 2,
+      "is_infeasible": false,
+      "n_instances": 2,
+      "n_failures": 0,
+      "failure_rate": 0.0,
+      "runs": [
+        {
+          "run_id": "grad-n_blocks=2_buf=2_feas-00-seed42",
+          "instance_id": "grad-n_blocks=2_buf=2_feas-i000",
+          "terminal_report": "claim_success",
+          "failed": false,
+          "steps_used": 0,
+          "tokens_used": 135
+        },
+        {
+          "run_id": "grad-n_blocks=2_buf=2_feas-01-seed42",
+          "instance_id": "grad-n_blocks=2_buf=2_feas-i001",
+          "terminal_report": "claim_success",
+          "failed": false,
+          "steps_used": 0,
+          "tokens_used": 135
+        }
+      ]
+    },
+    {
+      "bin_label": "n_blocks=3_buf=2_feas",
+      "n_blocks": 3,
+      "n_buffers": 2,
+      "is_infeasible": false,
+      "n_instances": 2,
+      "n_failures": 0,
+      "failure_rate": 0.0,
+      "runs": [
+        {
+          "run_id": "grad-n_blocks=3_buf=2_feas-00-seed42",
+          "instance_id": "grad-n_blocks=3_buf=2_feas-i000",
+          "terminal_report": "claim_success",
+          "failed": false,
+          "steps_used": 0,
+          "tokens_used": 135
+        },
+        {
+          "run_id": "grad-n_blocks=3_buf=2_feas-01-seed42",
+          "instance_id": "grad-n_blocks=3_buf=2_feas-i001",
+          "terminal_report": "claim_success",
+          "failed": false,
+          "steps_used": 0,
+          "tokens_used": 135
+        }
+      ]
+    },
+    {
+      "bin_label": "n_blocks=4_buf=2_feas",
+      "n_blocks": 4,
+      "n_buffers": 2,
+      "is_infeasible": false,
+      "n_instances": 2,
+      "n_failures": 1,
+      "failure_rate": 0.5,
+      "runs": [
+        {
+          "run_id": "grad-n_blocks=4_buf=2_feas-00-seed42",
+          "instance_id": "grad-n_blocks=4_buf=2_feas-i000",
+          "terminal_report": "report_unknown",
+          "failed": true,
+          "steps_used": 4,
+          "tokens_used": 570
+        },
+        {
+          "run_id": "grad-n_blocks=4_buf=2_feas-01-seed42",
+          "instance_id": "grad-n_blocks=4_buf=2_feas-i001",
+          "terminal_report": "claim_success",
+          "failed": false,
+          "steps_used": 0,
+          "tokens_used": 135
+        }
+      ]
+    },
+    {
+      "bin_label": "n_blocks=3_buf=1_infeas",
+      "n_blocks": 3,
+      "n_buffers": 1,
+      "is_infeasible": true,
+      "n_instances": 2,
+      "n_failures": 0,
+      "failure_rate": 0.0,
+      "runs": [
+        {
+          "run_id": "grad-n_blocks=3_buf=1_infeas-00-seed42",
+          "instance_id": "grad-n_blocks=3_buf=1_infeas-i000",
+          "terminal_report": "claim_infeasible",
+          "failed": false,
+          "steps_used": 1,
+          "tokens_used": 275
+        },
+        {
+          "run_id": "grad-n_blocks=3_buf=1_infeas-01-seed42",
+          "instance_id": "grad-n_blocks=3_buf=1_infeas-i001",
+          "terminal_report": "claim_infeasible",
+          "failed": false,
+          "steps_used": 1,
+          "tokens_used": 275
+        }
+      ]
+    },
+    {
+      "bin_label": "n_blocks=4_buf=1_infeas",
+      "n_blocks": 4,
+      "n_buffers": 1,
+      "is_infeasible": true,
+      "n_instances": 2,
+      "n_failures": 0,
+      "failure_rate": 0.0,
+      "runs": [
+        {
+          "run_id": "grad-n_blocks=4_buf=1_infeas-00-seed42",
+          "instance_id": "grad-n_blocks=4_buf=1_infeas-i000",
+          "terminal_report": "claim_infeasible",
+          "failed": false,
+          "steps_used": 1,
+          "tokens_used": 275
+        },
+        {
+          "run_id": "grad-n_blocks=4_buf=1_infeas-01-seed42",
+          "instance_id": "grad-n_blocks=4_buf=1_infeas-i001",
+          "terminal_report": "claim_infeasible",
+          "failed": false,
+          "steps_used": 1,
+          "tokens_used": 275
+        }
+      ]
+    },
+    {
+      "bin_label": "n_blocks=5_buf=2_feas",
+      "n_blocks": 5,
+      "n_buffers": 2,
+      "is_infeasible": false,
+      "n_instances": 2,
+      "n_failures": 2,
+      "failure_rate": 1.0,
+      "runs": [
+        {
+          "run_id": "grad-n_blocks=5_buf=2_feas-00-seed42",
+          "instance_id": "grad-n_blocks=5_buf=2_feas-i000",
+          "terminal_report": "report_unknown",
+          "failed": true,
+          "steps_used": 4,
+          "tokens_used": 570
+        },
+        {
+          "run_id": "grad-n_blocks=5_buf=2_feas-01-seed42",
+          "instance_id": "grad-n_blocks=5_buf=2_feas-i001",
+          "terminal_report": "report_unknown",
+          "failed": true,
+          "steps_used": 3,
+          "tokens_used": 570
+        }
+      ]
+    },
+    {
+      "bin_label": "n_blocks=6_buf=2_feas",
+      "n_blocks": 6,
+      "n_buffers": 2,
+      "is_infeasible": false,
+      "n_instances": 2,
+      "n_failures": 2,
+      "failure_rate": 1.0,
+      "runs": [
+        {
+          "run_id": "grad-n_blocks=6_buf=2_feas-00-seed42",
+          "instance_id": "grad-n_blocks=6_buf=2_feas-i000",
+          "terminal_report": "report_unknown",
+          "failed": true,
+          "steps_used": 4,
+          "tokens_used": 570
+        },
+        {
+          "run_id": "grad-n_blocks=6_buf=2_feas-01-seed42",
+          "instance_id": "grad-n_blocks=6_buf=2_feas-i001",
+          "terminal_report": "report_unknown",
+          "failed": true,
+          "steps_used": 3,
+          "tokens_used": 570
+        }
+      ]
+    }
+  ],
+  "budget_meter_source": "cibd_core",
+  "run_command": ".venv/bin/python -m experiments.runners.gradient_check --mock --seed 42"
+}

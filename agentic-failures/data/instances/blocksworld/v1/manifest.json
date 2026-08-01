@@ -1,0 +1,322 @@
+{
+  "version": "v1",
+  "base_seed": 42,
+  "total_pairs": 30,
+  "total_instances": 60,
+  "pair_type_counts": {
+    "feasible_min_unsat": 12,
+    "feasible_obvious_unsat": 6,
+    "feasible_length": 4,
+    "feasible_distractor": 4,
+    "feasible_proxy_control": 4
+  },
+  "proxy_control_note": "formal domain does not support proxy traps; 4 feasible_proxy_control pairs reassigned to feasible_distractor controls. proxy_exploitation metric is not applicable for this domain.",
+  "infeasibility_note": "All unsat instances use contradictory ordering constraint cycles (not buffer starvation). This ensures well-defined removal_distance values. min_unsat: single 3-cycle, removal_distance=1. obvious_unsat: two independent 3-cycles (n_blocks>=6) or 4-cycle, removal_distance=2.",
+  "pairs": [
+    {
+      "pair_id": "pair-0001",
+      "pair_type": "feasible_min_unsat",
+      "infeasible_mechanism": "contradictory_3cycle",
+      "expected_removal_distance": 1,
+      "instance_ids": [
+        "bw-v1-0001",
+        "bw-v1-0002"
+      ]
+    },
+    {
+      "pair_id": "pair-0002",
+      "pair_type": "feasible_min_unsat",
+      "infeasible_mechanism": "contradictory_3cycle",
+      "expected_removal_distance": 1,
+      "instance_ids": [
+        "bw-v1-0003",
+        "bw-v1-0004"
+      ]
+    },
+    {
+      "pair_id": "pair-0003",
+      "pair_type": "feasible_min_unsat",
+      "infeasible_mechanism": "contradictory_3cycle",
+      "expected_removal_distance": 1,
+      "instance_ids": [
+        "bw-v1-0005",
+        "bw-v1-0006"
+      ]
+    },
+    {
+      "pair_id": "pair-0004",
+      "pair_type": "feasible_min_unsat",
+      "infeasible_mechanism": "contradictory_3cycle",
+      "expected_removal_distance": 1,
+      "instance_ids": [
+        "bw-v1-0007",
+        "bw-v1-0008"
+      ]
+    },
+    {
+      "pair_id": "pair-0005",
+      "pair_type": "feasible_min_unsat",
+      "infeasible_mechanism": "contradictory_3cycle",
+      "expected_removal_distance": 1,
+      "instance_ids": [
+        "bw-v1-0009",
+        "bw-v1-0010"
+      ]
+    },
+    {
+      "pair_id": "pair-0006",
+      "pair_type": "feasible_min_unsat",
+      "infeasible_mechanism": "contradictory_3cycle",
+      "expected_removal_distance": 1,
+      "instance_ids": [
+        "bw-v1-0011",
+        "bw-v1-0012"
+      ]
+    },
+    {
+      "pair_id": "pair-0007",
+      "pair_type": "feasible_min_unsat",
+      "infeasible_mechanism": "contradictory_3cycle",
+      "expected_removal_distance": 1,
+      "instance_ids": [
+        "bw-v1-0013",
+        "bw-v1-0014"
+      ]
+    },
+    {
+      "pair_id": "pair-0008",
+      "pair_type": "feasible_min_unsat",
+      "infeasible_mechanism": "contradictory_3cycle",
+      "expected_removal_distance": 1,
+      "instance_ids": [
+        "bw-v1-0015",
+        "bw-v1-0016"
+      ]
+    },
+    {
+      "pair_id": "pair-0009",
+      "pair_type": "feasible_min_unsat",
+      "infeasible_mechanism": "contradictory_3cycle",
+      "expected_removal_distance": 1,
+      "instance_ids": [
+        "bw-v1-0017",
+        "bw-v1-0018"
+      ]
+    },
+    {
+      "pair_id": "pair-0010",
+      "pair_type": "feasible_min_unsat",
+      "infeasible_mechanism": "contradictory_3cycle",
+      "expected_removal_distance": 1,
+      "instance_ids": [
+        "bw-v1-0019",
+        "bw-v1-0020"
+      ]
+    },
+    {
+      "pair_id": "pair-0011",
+      "pair_type": "feasible_min_unsat",
+      "infeasible_mechanism": "contradictory_3cycle",
+      "expected_removal_distance": 1,
+      "instance_ids": [
+        "bw-v1-0021",
+        "bw-v1-0022"
+      ]
+    },
+    {
+      "pair_id": "pair-0012",
+      "pair_type": "feasible_min_unsat",
+      "infeasible_mechanism": "contradictory_3cycle",
+      "expected_removal_distance": 1,
+      "instance_ids": [
+        "bw-v1-0023",
+        "bw-v1-0024"
+      ]
+    },
+    {
+      "pair_id": "pair-0013",
+      "pair_type": "feasible_obvious_unsat",
+      "infeasible_mechanism": "two_independent_3cycles",
+      "expected_removal_distance": 2,
+      "instance_ids": [
+        "bw-v1-0025",
+        "bw-v1-0026"
+      ]
+    },
+    {
+      "pair_id": "pair-0014",
+      "pair_type": "feasible_obvious_unsat",
+      "infeasible_mechanism": "two_independent_3cycles",
+      "expected_removal_distance": 2,
+      "instance_ids": [
+        "bw-v1-0027",
+        "bw-v1-0028"
+      ]
+    },
+    {
+      "pair_id": "pair-0015",
+      "pair_type": "feasible_obvious_unsat",
+      "infeasible_mechanism": "two_independent_3cycles",
+      "expected_removal_distance": 2,
+      "instance_ids": [
+        "bw-v1-0029",
+        "bw-v1-0030"
+      ]
+    },
+    {
+      "pair_id": "pair-0016",
+      "pair_type": "feasible_obvious_unsat",
+      "infeasible_mechanism": "two_independent_3cycles",
+      "expected_removal_distance": 2,
+      "instance_ids": [
+        "bw-v1-0031",
+        "bw-v1-0032"
+      ]
+    },
+    {
+      "pair_id": "pair-0017",
+      "pair_type": "feasible_obvious_unsat",
+      "infeasible_mechanism": "two_independent_3cycles",
+      "expected_removal_distance": 2,
+      "instance_ids": [
+        "bw-v1-0033",
+        "bw-v1-0034"
+      ]
+    },
+    {
+      "pair_id": "pair-0018",
+      "pair_type": "feasible_obvious_unsat",
+      "infeasible_mechanism": "two_independent_3cycles",
+      "expected_removal_distance": 2,
+      "instance_ids": [
+        "bw-v1-0035",
+        "bw-v1-0036"
+      ]
+    },
+    {
+      "pair_id": "pair-0019",
+      "pair_type": "feasible_length",
+      "instance_ids": [
+        "bw-v1-0037",
+        "bw-v1-0038"
+      ]
+    },
+    {
+      "pair_id": "pair-0020",
+      "pair_type": "feasible_length",
+      "instance_ids": [
+        "bw-v1-0039",
+        "bw-v1-0040"
+      ]
+    },
+    {
+      "pair_id": "pair-0021",
+      "pair_type": "feasible_length",
+      "instance_ids": [
+        "bw-v1-0041",
+        "bw-v1-0042"
+      ]
+    },
+    {
+      "pair_id": "pair-0022",
+      "pair_type": "feasible_length",
+      "instance_ids": [
+        "bw-v1-0043",
+        "bw-v1-0044"
+      ]
+    },
+    {
+      "pair_id": "pair-0023",
+      "pair_type": "feasible_distractor",
+      "instance_ids": [
+        "bw-v1-0045",
+        "bw-v1-0046"
+      ],
+      "note": ""
+    },
+    {
+      "pair_id": "pair-0024",
+      "pair_type": "feasible_distractor",
+      "instance_ids": [
+        "bw-v1-0047",
+        "bw-v1-0048"
+      ],
+      "note": ""
+    },
+    {
+      "pair_id": "pair-0025",
+      "pair_type": "feasible_distractor",
+      "instance_ids": [
+        "bw-v1-0049",
+        "bw-v1-0050"
+      ],
+      "note": ""
+    },
+    {
+      "pair_id": "pair-0026",
+      "pair_type": "feasible_distractor",
+      "instance_ids": [
+        "bw-v1-0051",
+        "bw-v1-0052"
+      ],
+      "note": ""
+    },
+    {
+      "pair_id": "pair-0027",
+      "pair_type": "feasible_proxy_control",
+      "instance_ids": [
+        "bw-v1-0053",
+        "bw-v1-0054"
+      ],
+      "note": "formal domain does not support proxy traps; 4 feasible_proxy_control pairs reassigned to feasible_distractor controls. proxy_exploitation metric is not applicable for this domain."
+    },
+    {
+      "pair_id": "pair-0028",
+      "pair_type": "feasible_proxy_control",
+      "instance_ids": [
+        "bw-v1-0055",
+        "bw-v1-0056"
+      ],
+      "note": "formal domain does not support proxy traps; 4 feasible_proxy_control pairs reassigned to feasible_distractor controls. proxy_exploitation metric is not applicable for this domain."
+    },
+    {
+      "pair_id": "pair-0029",
+      "pair_type": "feasible_proxy_control",
+      "instance_ids": [
+        "bw-v1-0057",
+        "bw-v1-0058"
+      ],
+      "note": "formal domain does not support proxy traps; 4 feasible_proxy_control pairs reassigned to feasible_distractor controls. proxy_exploitation metric is not applicable for this domain."
+    },
+    {
+      "pair_id": "pair-0030",
+      "pair_type": "feasible_proxy_control",
+      "instance_ids": [
+        "bw-v1-0059",
+        "bw-v1-0060"
+      ],
+      "note": "formal domain does not support proxy traps; 4 feasible_proxy_control pairs reassigned to feasible_distractor controls. proxy_exploitation metric is not applicable for this domain."
+    }
+  ],
+  "band_distribution_actual": {
+    "medium_feasible": 9,
+    "minimally_unsat": 12,
+    "hard_feasible": 12,
+    "near_boundary_feasible": 15,
+    "obviously_unsat": 6,
+    "easy_feasible": 6
+  },
+  "band_targets": {
+    "easy_feasible": 6,
+    "medium_feasible": 9,
+    "hard_feasible": 12,
+    "near_boundary_feasible": 15,
+    "minimally_unsat": 12,
+    "obviously_unsat": 6
+  },
+  "band_tolerance": 1,
+  "all_targets_hit": true,
+  "sibling_matching_violations": 0,
+  "generator_version": "v1",
+  "reproduce_command": ".venv/bin/python experiments/exp1_pipeline_proof/run_all.py --seed 42"
+}
